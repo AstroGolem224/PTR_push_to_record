@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pc-sound-recorder"
+version = "1.0.0"
+description = "Hold a global hotkey to record the currently playing Linux audio"
+requires-python = ">=3.11"
+dependencies = ["PySide6>=6.6", "evdev>=1.7"]
+
+[project.scripts]
+pc-sound-recorder = "pc_sound_recorder.app:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

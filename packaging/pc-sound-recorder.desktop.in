@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=PC-Ton & Vorlesen
+Comment=Record PC audio and read selected text with Mimic
+Comment[de]=PC-Audio aufnehmen und markierten Text mit Mimic vorlesen
+Exec=@LAUNCHER@
+Icon=pc-sound-recorder
+Terminal=false
+Categories=AudioVideo;Audio;
+Keywords=audio;record;pipewire;aufnahme;mimic;tts;vorlesen;
+X-KDE-autostart-after=panel
