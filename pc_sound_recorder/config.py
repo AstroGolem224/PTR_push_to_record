@@ -65,7 +65,13 @@ class Config:
     # Abbruch-Kürzel. Anders als das Diktat braucht es keine Einrichtung und
     # kann nichts kaputtmachen (es startet nie etwas), deshalb ab Werk an.
     stop_enabled: bool = True
-    stop_trigger_key: str = "KEY_Y"
+    # KEY_Z, nicht KEY_Y: evdev benennt Tasten nach US-Belegung, und auf einer
+    # deutschen Tastatur sitzt an der KEY_Z-Position die Taste mit der Aufschrift
+    # Y. Gemessen am 2026-08-28: Meta + Taste "Y" liefert Code 44 (KEY_Z).
+    # Dieselbe Vertauschung, an der in stt.py schon `ydotool type` gescheitert
+    # ist ("zeigt" -> "yeigt"). Kein Test faengt das: die Attrappen pruefen
+    # gegen den Namen, nicht gegen die Taste unter dem Finger.
+    stop_trigger_key: str = "KEY_Z"
     stop_modifiers: tuple[str, ...] = ("KEY_LEFTMETA",)
 
     def __post_init__(self) -> None:
@@ -110,7 +116,10 @@ KEY_LABELS = {
     # mit dem ersten Buchstaben des Diktats zu ê oder â. Die Pausetaste
     # schreibt nichts, also gibt es nichts wegzuräumen.
     "KEY_PAUSE": "Pause",
-    "KEY_Y": "Y",
+    # Beschriftet nach deutscher Aufschrift, nicht nach evdev-Name -- sonst
+    # waehlt der Nutzer "Y" und bekommt die Taste daneben.
+    "KEY_Z": "Y",
+    "KEY_Y": "Z",
 }
 
 MODIFIER_OPTIONS = {

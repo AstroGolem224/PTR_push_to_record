@@ -9,6 +9,9 @@ Eine kleine KDE/Wayland-Tray-App mit vier getrennten Funktionen:
   wird ins fokussierte Fenster eingefügt. Standardmäßig aus, in den
   Einstellungen einzuschalten.
 - **Meta+Y** bricht ab, was gerade läuft: ein Vorlesen, ein laufendes Diktat.
+  Intern ist das `KEY_Z`: evdev benennt Tasten nach US-Belegung, und auf einer
+  deutschen Tastatur sitzt dort die Taste mit der Aufschrift Y. Die
+  Einstellungen zeigen die Aufschrift, nicht den evdev-Namen.
   Es startet nie etwas Neues – anders als ein zweiter Druck auf das Vorlesen-Kürzel, der
   die Wiedergabe zwar beendet, aber sofort wieder von vorn anfängt. Läuft
   nichts, passiert nichts.

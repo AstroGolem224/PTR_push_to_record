@@ -35,7 +35,7 @@ class HotkeyThread(QThread):
         stt_trigger: str = "KEY_PAUSE",
         stt_modifiers: tuple[str, ...] = ("KEY_LEFTMETA",),
         stt_enabled: bool = False,
-        stop_trigger: str = "KEY_Y",
+        stop_trigger: str = "KEY_Z",
         stop_modifiers: tuple[str, ...] = ("KEY_LEFTMETA",),
         stop_enabled: bool = False,
     ) -> None:

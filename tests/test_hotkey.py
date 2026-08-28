@@ -254,14 +254,16 @@ def test_partial_failure_is_reported_not_swallowed(monkeypatch):
 
 # --- Viertes Kürzel: Abbrechen ---
 
-WITH_Y = FULL + ("KEY_Y",)
+# KEY_Z ist der Ausloeser: auf deutscher Belegung traegt diese Taste die
+# Aufschrift Y. Siehe config.KEY_LABELS.
+WITH_Y = FULL + ("KEY_Z",)
 
 
 def test_stop_shortcut_fires(monkeypatch):
     thread = HotkeyThread("KEY_F8", ("KEY_LEFTMETA",), stop_enabled=True)
     device = _FakeDevice(
         "Tastatur", WITH_Y,
-        [[_key("KEY_LEFTMETA", 1), _key("KEY_Y", 1), _key("KEY_Y", 0)]],
+        [[_key("KEY_LEFTMETA", 1), _key("KEY_Z", 1), _key("KEY_Z", 0)]],
     )
     assert _run(thread, [device], monkeypatch) == ["stop"]
 
@@ -269,7 +271,7 @@ def test_stop_shortcut_fires(monkeypatch):
 def test_stop_needs_its_modifier(monkeypatch):
     """Y allein ist ein Buchstabe, kein Abbruch."""
     thread = HotkeyThread("KEY_F8", ("KEY_LEFTMETA",), stop_enabled=True)
-    device = _FakeDevice("Tastatur", WITH_Y, [[_key("KEY_Y", 1), _key("KEY_Y", 0)]])
+    device = _FakeDevice("Tastatur", WITH_Y, [[_key("KEY_Z", 1), _key("KEY_Z", 0)]])
     assert _run(thread, [device], monkeypatch) == []
 
 
@@ -277,7 +279,7 @@ def test_stop_disabled_emits_nothing(monkeypatch):
     thread = HotkeyThread("KEY_F8", ("KEY_LEFTMETA",))
     device = _FakeDevice(
         "Tastatur", WITH_Y,
-        [[_key("KEY_LEFTMETA", 1), _key("KEY_Y", 1), _key("KEY_Y", 0)]],
+        [[_key("KEY_LEFTMETA", 1), _key("KEY_Z", 1), _key("KEY_Z", 0)]],
     )
     assert _run(thread, [device], monkeypatch) == []
 
