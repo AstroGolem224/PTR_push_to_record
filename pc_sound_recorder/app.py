@@ -12,9 +12,10 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
-    QFormLayout, QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox, QPushButton,
-    QSpinBox, QSystemTrayIcon, QVBoxLayout, QWidget,
+    QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
+    QDoubleSpinBox, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
+    QMenu, QMessageBox, QPushButton, QScrollArea, QSpinBox, QSystemTrayIcon,
+    QVBoxLayout, QWidget,
 )
 
 from .audio import FORMATS, AudioRecorder, RecorderError
@@ -22,6 +23,7 @@ from .config import (
     APP_ID, KEY_LABELS, MODIFIER_OPTIONS, Config, shortcut_label,
 )
 from .hotkey import HotkeyThread
+from .stt import DictationThread, Recording, restore_clipboard, snapshot_clipboard
 from .tts import SpeechThread, VoicesThread, find_mimic
 
 
@@ -106,6 +108,14 @@ class SettingsDialog(QDialog):
         tts_shortcut_row.addWidget(QLabel("+"))
         tts_shortcut_row.addWidget(self.tts_trigger)
 
+        self.stt_modifier, self.stt_trigger = self._shortcut_widgets(
+            config.stt_modifiers, config.stt_trigger_key
+        )
+        stt_shortcut_row = QHBoxLayout()
+        stt_shortcut_row.addWidget(self.stt_modifier)
+        stt_shortcut_row.addWidget(QLabel("+"))
+        stt_shortcut_row.addWidget(self.stt_trigger)
+
         self.format = QComboBox()
         for key in FORMATS:
             self.format.addItem(key.upper(), key)
@@ -176,10 +186,61 @@ class SettingsDialog(QDialog):
         clipboard_warning.setWordWrap(True)
         clipboard_warning.setStyleSheet("color: #e67700;")
 
+        # --- Diktat ---
+        self.stt_enabled = QCheckBox(
+            f"Diktat: {shortcut_label(config, stt=True)} halten, sprechen, loslassen"
+        )
+        self.stt_enabled.setChecked(config.stt_enabled)
+        self.stt_model = QComboBox()
+        for name in ("large-v3-turbo", "large-v3", "medium", "small"):
+            self.stt_model.addItem(name, name)
+        if self.stt_model.findData(config.stt_model) < 0:
+            self.stt_model.addItem(config.stt_model, config.stt_model)
+        self.stt_model.setCurrentIndex(self.stt_model.findData(config.stt_model))
+        self.stt_language = QComboBox()
+        for label, value in (("Deutsch", "de"), ("Englisch", "en"), ("automatisch", "")):
+            self.stt_language.addItem(label, value)
+        self.stt_language.setCurrentIndex(
+            max(self.stt_language.findData(config.stt_language), 0)
+        )
+        self.stt_threshold = QDoubleSpinBox()
+        self.stt_threshold.setRange(0.0, 0.5)
+        self.stt_threshold.setSingleStep(0.005)
+        self.stt_threshold.setDecimals(3)
+        self.stt_threshold.setValue(config.stt_threshold)
+        self.stt_threshold.setToolTip(
+            "Lautstärke des lautesten 200-ms-Fensters, unter der eine Aufnahme als "
+            "still gilt. Verhindert, dass aus Raumrauschen ein Satz erfunden wird."
+        )
+        self.stt_clipboard_restore = QCheckBox(
+            "Zwischenablage nach dem Diktat wiederherstellen"
+        )
+        self.stt_clipboard_restore.setChecked(config.stt_clipboard_restore)
+        stt_clipboard_hint = QLabel(
+            "Das Diktat wird über die Zwischenablage eingefügt und überschreibt sie "
+            "dabei kurz. Mit Häkchen liest PTR den bisherigen Inhalt vorher aus, um "
+            "ihn danach zurückzulegen; ohne Häkchen wird er nicht gelesen, geht aber "
+            "verloren. Schlägt das Einfügen fehl (ydotool nicht bereit), bleibt der "
+            "Diktattext in beiden Fällen in der Zwischenablage stehen – sonst wäre "
+            "er verloren. Unabhängig vom Häkchen gilt: Diktate werden als "
+            "vertraulich markiert und stehen deshalb nicht in der "
+            "Klipper-Historie – nur so lässt sich die Zwischenablage danach "
+            "überhaupt wieder leeren, denn Klipper böte einen Historieneintrag "
+            "sofort wieder an. Mit Häkchen wird auch der zurückgelegte alte "
+            "Inhalt vertraulich markiert (er könnte ein Passwort sein) und fällt "
+            "damit ebenfalls aus der Historie."
+        )
+        stt_clipboard_hint.setWordWrap(True)
+        stt_clipboard_hint.setStyleSheet("color: #e67700;")
+
         form = QFormLayout()
         form.addRow("", self.enabled)
         form.addRow("Aufnahme-Hotkey:", shortcut_row)
         form.addRow("Vorlesen-Hotkey:", tts_shortcut_row)
+        form.addRow("Diktat-Hotkey:", stt_shortcut_row)
+        form.addRow("Diktat-Modell:", self.stt_model)
+        form.addRow("Diktat-Sprache:", self.stt_language)
+        form.addRow("Diktat-Stilleschwelle:", self.stt_threshold)
         form.addRow("Format:", format_row)
         form.addRow("", self.mix_microphone)
         form.addRow("Maximale Dauer:", self.max_minutes)
@@ -190,15 +251,28 @@ class SettingsDialog(QDialog):
         )
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
+
+        # Alles außer den Knöpfen in einen Scrollbereich: der Dialog wollte
+        # zuletzt 732 px in der Höhe, auf einem 1366×768-Schirm lag „Speichern"
+        # damit unterhalb des Bildrands und war nicht erreichbar. Die Knöpfe
+        # bleiben außerhalb, damit sie immer sichtbar sind.
+        inner = QWidget()
+        inner_layout = QVBoxLayout(inner)
+        inner_layout.setContentsMargins(0, 0, 0, 0)
+        inner_layout.addLayout(form)
+        for widget in (
+            self.tts_enabled, self.voice_hint, self.notifications,
+            self.silence_warn, self.clipboard_fallback, clipboard_warning,
+            self.stt_enabled, self.stt_clipboard_restore, stt_clipboard_hint,
+            self.autostart,
+        ):
+            inner_layout.addWidget(widget)
+        scroll = QScrollArea()
+        scroll.setWidget(inner)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         layout = QVBoxLayout(self)
-        layout.addLayout(form)
-        layout.addWidget(self.tts_enabled)
-        layout.addWidget(self.voice_hint)
-        layout.addWidget(self.notifications)
-        layout.addWidget(self.silence_warn)
-        layout.addWidget(self.clipboard_fallback)
-        layout.addWidget(clipboard_warning)
-        layout.addWidget(self.autostart)
+        layout.addWidget(scroll)
         layout.addWidget(buttons)
 
     def _shortcut_widgets(
@@ -263,21 +337,29 @@ class SettingsDialog(QDialog):
         if folder:
             self.folder.setText(folder)
 
+    def _shortcut(self, modifier: QComboBox, trigger: QComboBox) -> tuple:
+        return (tuple(MODIFIER_OPTIONS[modifier.currentText()]), trigger.currentData())
+
     def accept(self) -> None:
         # Immer ablehnen, unabhängig von den aktiviert-Checkboxen: die
-        # Konfiguration selbst soll gar nicht kollidieren können.
-        if (
-            self.trigger.currentData() == self.tts_trigger.currentData()
-            and MODIFIER_OPTIONS[self.modifier.currentText()]
-                == MODIFIER_OPTIONS[self.tts_modifier.currentText()]
-        ):
-            QMessageBox.warning(
-                self,
-                "Hotkey-Kollision",
-                "Aufnahme- und Vorlesen-Hotkey sind identisch. "
-                "Bitte wähle unterschiedliche Tastenkombinationen.",
-            )
-            return
+        # Konfiguration selbst soll gar nicht kollidieren können. Drei
+        # Funktionen heißen drei Paarvergleiche, nicht einer.
+        combinations = {
+            "Aufnahme": self._shortcut(self.modifier, self.trigger),
+            "Vorlesen": self._shortcut(self.tts_modifier, self.tts_trigger),
+            "Diktat": self._shortcut(self.stt_modifier, self.stt_trigger),
+        }
+        names = list(combinations)
+        for index, first in enumerate(names):
+            for second in names[index + 1:]:
+                if combinations[first] == combinations[second]:
+                    QMessageBox.warning(
+                        self,
+                        "Hotkey-Kollision",
+                        f"{first}- und {second}-Hotkey sind identisch. "
+                        "Bitte wähle unterschiedliche Tastenkombinationen.",
+                    )
+                    return
         super().accept()
 
     def apply(self, config: Config) -> None:
@@ -298,6 +380,13 @@ class SettingsDialog(QDialog):
         config.notifications = self.notifications.isChecked()
         config.silence_warn = self.silence_warn.isChecked()
         config.tts_clipboard_fallback = self.clipboard_fallback.isChecked()
+        config.stt_enabled = self.stt_enabled.isChecked()
+        config.stt_modifiers = MODIFIER_OPTIONS[self.stt_modifier.currentText()]
+        config.stt_trigger_key = self.stt_trigger.currentData()
+        config.stt_model = self.stt_model.currentData()
+        config.stt_language = self.stt_language.currentData()
+        config.stt_threshold = self.stt_threshold.value()
+        config.stt_clipboard_restore = self.stt_clipboard_restore.isChecked()
 
 
 class TrayApplication:
@@ -308,7 +397,15 @@ class TrayApplication:
         self.recorder = AudioRecorder()
         self.hotkey: HotkeyThread | None = None
         self.speech: SpeechThread | None = None
+        self.dictation = Recording()
+        self.stt: DictationThread | None = None
         self._last_speech_status: str | None = None
+        self._last_stt_status: str | None = None
+        # Ablagekopie für den Notfall-Rückweg nach einem terminate(), siehe
+        # `finish_dictation`.
+        self._stt_clipboard: tuple | None = None
+        self._hotkey_failed = False
+        self._hotkey_missing: set[str] = set()
         self._silence_bridge = _SilenceBridge()
         self._silence_bridge.warned.connect(self._silence_warning)
         themed = QIcon.fromTheme(APP_ID)
@@ -316,6 +413,7 @@ class TrayApplication:
         self.icon_disabled = tray_icon("#868e96")
         self.icon_recording = tray_icon("#e03131")
         self.icon_speaking = tray_icon("#1971c2")
+        self.icon_dictating = tray_icon("#f08c00")
         self.app.setWindowIcon(self.icon_idle)
         self.duration_timer = QTimer()
         self.duration_timer.setInterval(1000)
@@ -332,6 +430,12 @@ class TrayApplication:
         self.tts_enabled_action.setCheckable(True)
         self.tts_enabled_action.setChecked(self.config.tts_enabled)
         self.tts_enabled_action.toggled.connect(self.set_tts_enabled)
+        self.stt_enabled_action = QAction(
+            f"Diktat-Hotkey {shortcut_label(self.config, stt=True)} aktiv", self.menu
+        )
+        self.stt_enabled_action.setCheckable(True)
+        self.stt_enabled_action.setChecked(self.config.stt_enabled)
+        self.stt_enabled_action.toggled.connect(self.set_stt_enabled)
         self.status_action = QAction("Bereit", self.menu)
         self.status_action.setEnabled(False)
         self.recent_menu = QMenu("Letzte Aufnahmen", self.menu)
@@ -344,6 +448,7 @@ class TrayApplication:
         self.quit_action.triggered.connect(self.quit)
         self.menu.addAction(self.enabled_action)
         self.menu.addAction(self.tts_enabled_action)
+        self.menu.addAction(self.stt_enabled_action)
         self.menu.addAction(self.status_action)
         self.menu.addSeparator()
         self.menu.addMenu(self.recent_menu)
@@ -357,10 +462,12 @@ class TrayApplication:
         set_autostart(self.config.autostart)
         self._restart_hotkey()
         self._refresh()
+        # Dieselbe Quelle wie die Statuszeile: fest verdrahtet versprach die
+        # Blase Kürzel, die gar nicht bedient werden.
+        ready = " · ".join(self._ready_shortcuts())
         self._notify(
             "PC-Ton & Vorlesen",
-            f"Bereit: {shortcut_label(self.config)} nimmt auf, "
-            f"{shortcut_label(self.config, tts=True)} liest markierten Text vor.",
+            f"Bereit: {ready}" if ready else "Kein Kürzel aktiv.",
             QSystemTrayIcon.MessageIcon.Information,
             2500,
         )
@@ -382,6 +489,20 @@ class TrayApplication:
             self.enabled_action.toggle()
 
     def _restart_hotkey(self) -> None:
+        # Zuerst die Aufnahme, dann der Faden: `_restart_hotkey` löst schon ein
+        # Linksklick aufs Tray-Symbol aus. Fällt der zwischen Druck und
+        # Loslassen, gehört die Loslass-Flanke einem Faden, den wir gleich
+        # beenden — pw-record liefe sonst weiter und schriebe ins Leere.
+        # Der Faden feuert `stt_released` beim Ende noch nach (hotkey.py,
+        # finally); das trifft dann auf eine beendete Aufnahme und tut nichts.
+        if self.dictation.is_recording:
+            self.dictation.cancel()
+            self._notify(
+                "Diktat abgebrochen",
+                "Die Tastenüberwachung wurde neu gestartet, während das Diktat lief.",
+                QSystemTrayIcon.MessageIcon.Warning,
+                3000,
+            )
         if self.hotkey:
             self.hotkey.stop()
             if not self.hotkey.wait(1500):
@@ -392,7 +513,11 @@ class TrayApplication:
                 self.hotkey.terminate()
                 self.hotkey.wait(500)
             self.hotkey = None
-        if self.config.enabled or self.config.tts_enabled:
+        # Neuer Versuch, neue Chance: die Merker fallen erst, wenn der neue
+        # Thread `unavailable` bzw. `degraded` wieder meldet.
+        self._hotkey_failed = False
+        self._hotkey_missing = set()
+        if self.config.enabled or self.config.tts_enabled or self.config.stt_enabled:
             self.hotkey = HotkeyThread(
                 self.config.trigger_key,
                 self.config.modifiers,
@@ -400,10 +525,16 @@ class TrayApplication:
                 tts_trigger=self.config.tts_trigger_key,
                 tts_modifiers=self.config.tts_modifiers,
                 read_aloud_enabled=self.config.tts_enabled,
+                stt_trigger=self.config.stt_trigger_key,
+                stt_modifiers=self.config.stt_modifiers,
+                stt_enabled=self.config.stt_enabled,
             )
             self.hotkey.pressed.connect(self.toggle_recording)
             self.hotkey.read_aloud_pressed.connect(self.speak_selected_text)
+            self.hotkey.stt_pressed.connect(self.start_dictation)
+            self.hotkey.stt_released.connect(self.finish_dictation)
             self.hotkey.unavailable.connect(self.hotkey_error)
+            self.hotkey.degraded.connect(self.hotkey_degraded)
             self.hotkey.start()
 
     def _tick(self) -> None:
@@ -414,8 +545,12 @@ class TrayApplication:
         elapsed = time.monotonic() - self.recorder.started_at
         minutes, seconds = divmod(int(elapsed), 60)
         stamp = f"{minutes:02d}:{seconds:02d}"
-        self.tray.setToolTip(f"PC-Ton aufnehmen – Aufnahme läuft ({stamp})")
-        self.status_action.setText(f"● Aufnahme läuft … {stamp}")
+        # Über `_refresh`, nicht direkt gesetzt: sonst überschriebe der Sekunden-
+        # takt jede Diktatmeldung, und die Zusammenführung beider Zustände
+        # stünde an zwei Stellen. Auch die Uhr geht durch `_refresh` — ein
+        # zweites `setToolTip()` hier hinterher nähme den Diktatteil wieder aus
+        # dem Tooltip heraus und kostete je Sekunde ein zusätzliches DBus-Signal.
+        self._refresh(f"● Aufnahme läuft … {stamp}", stamp=stamp)
         limit = self.config.max_minutes * 60
         if limit > 0 and elapsed >= limit:
             max_minutes = self.config.max_minutes
@@ -427,24 +562,66 @@ class TrayApplication:
                 4000,
             )
 
-    def _refresh(self, status: str | None = None) -> None:
+    def _ready_shortcuts(self) -> list[str]:
+        """Nur die Kürzel, die auch wirklich eine Tastatur bedient.
+
+        Ohne den Abzug von `_hotkey_missing` verspricht das Tray dauerhaft ein
+        Kürzel, das auf dieser Hardware nie auslöst.
+        """
+        shortcuts = []
+        if self.config.enabled and "record" not in self._hotkey_missing:
+            shortcuts.append(f"{shortcut_label(self.config)} Aufnahme")
+        if self.config.tts_enabled and "tts" not in self._hotkey_missing:
+            shortcuts.append(f"{shortcut_label(self.config, tts=True)} Vorlesen")
+        if self.config.stt_enabled and "stt" not in self._hotkey_missing:
+            shortcuts.append(f"{shortcut_label(self.config, stt=True)} Diktat")
+        return shortcuts
+
+    def _dictation_status(self) -> tuple[str, str] | None:
+        """(Statuszeile, Tooltip) des Diktats, oder None wenn keins läuft."""
+        if self.dictation.is_recording:
+            return "● Diktat: hört zu …", "Diktat – hört zu"
+        if self.stt and self.stt.isRunning():
+            return "✳ Diktat: erkennt …", "Diktat – erkennt"
+        return None
+
+    def _refresh(self, status: str | None = None, *, stamp: str | None = None) -> None:
+        dictation = self._dictation_status()
         if self.recorder.is_recording:
+            # Aufnahme und Diktat schließen einander nicht aus: die Aufnahme
+            # hängt am ffmpeg-Monitor, das Diktat an pw-record am Mikrofon —
+            # zwei getrennte Wege, und das ist Absicht. Deshalb werden beide
+            # Zustände in eine Zeile gelegt, statt der Aufnahme den Vortritt zu
+            # geben; sonst wäre das Diktat während einer Aufnahme unsichtbar.
+            # Das Symbol bleibt rot: eine laufende Aufnahme darf nie wie etwas
+            # anderes aussehen.
+            text = status or "● Aufnahme läuft …"
             self.tray.setIcon(self.icon_recording)
-            self.tray.setToolTip("PC-Ton aufnehmen – Aufnahme läuft")
-            self.status_action.setText(status or "● Aufnahme läuft …")
+            self.tray.setToolTip(
+                "PC-Ton aufnehmen – Aufnahme läuft"
+                + (f" ({stamp})" if stamp else "")
+                + (f" · {dictation[1]}" if dictation else "")
+            )
+            self.status_action.setText(
+                f"{text} · {dictation[0]}" if dictation else text
+            )
+        elif dictation:
+            self.tray.setIcon(self.icon_dictating)
+            self.tray.setToolTip(dictation[1])
+            self.status_action.setText(status or dictation[0])
         elif self.speech and self.speech.isRunning():
             self.tray.setIcon(self.icon_speaking)
             self.tray.setToolTip(f"Mimic spricht mit {self.config.tts_voice}")
             self.status_action.setText(status or f"▶ Mimic spricht: {self.config.tts_voice}")
-        elif self.config.enabled or self.config.tts_enabled:
-            label = shortcut_label(self.config)
+        elif self._hotkey_failed:
+            # Vor dem Bereit-Zweig: ein toter Hotkey-Thread zeigte sonst nach
+            # Ablauf der Meldung wieder Grün, der Ausfall wäre unsichtbar.
+            self.tray.setIcon(self.icon_disabled)
+            self.tray.setToolTip("PC-Ton & Vorlesen – Hotkey nicht verfügbar")
+            self.status_action.setText(status or "Hotkey nicht verfügbar")
+        elif self.config.enabled or self.config.tts_enabled or self.config.stt_enabled:
             self.tray.setIcon(self.icon_idle)
-            shortcuts = []
-            if self.config.enabled:
-                shortcuts.append(f"{label} Aufnahme")
-            if self.config.tts_enabled:
-                shortcuts.append(f"{shortcut_label(self.config, tts=True)} Vorlesen")
-            ready = " · ".join(shortcuts)
+            ready = " · ".join(self._ready_shortcuts()) or "kein Kürzel bedient"
             self.tray.setToolTip(f"PC-Ton & Vorlesen – bereit ({ready})")
             self.status_action.setText(status or f"Bereit: {ready}")
         else:
@@ -493,6 +670,110 @@ class TrayApplication:
         self.config.save()
         self._restart_hotkey()
         self._refresh()
+
+    def set_stt_enabled(self, enabled: bool) -> None:
+        if not enabled and self.dictation.is_recording:
+            self.dictation.cancel()
+        self.config.stt_enabled = enabled
+        self.config.save()
+        self._restart_hotkey()
+        self._refresh()
+
+    # --- Diktat -----------------------------------------------------------
+
+    def start_dictation(self) -> None:
+        if not self.config.stt_enabled or self.dictation.is_recording:
+            return
+        if self.stt is not None and self.stt.isRunning():
+            # Das vorige Diktat wird noch erkannt. Ein zweites danebenlegen
+            # hieße zwei Modelle gleichzeitig im VRAM und zwei Texte, die um
+            # dieselbe Einfügestelle streiten.
+            self._notify(
+                "Diktat läuft noch",
+                "Das vorherige Diktat wird gerade erkannt. Bitte kurz warten.",
+                QSystemTrayIcon.MessageIcon.Warning,
+                3000,
+            )
+            return
+        try:
+            self.dictation.start()
+        except OSError as error:
+            self._refresh("Diktat nicht gestartet")
+            self._notify(
+                "Diktat nicht gestartet",
+                f"pw-record ließ sich nicht starten: {error}",
+                QSystemTrayIcon.MessageIcon.Critical,
+                5000,
+            )
+            return
+        self._refresh()
+
+    def finish_dictation(self) -> None:
+        if not self.dictation.is_recording:
+            return
+        duration = self.dictation.stop()
+        if duration < self.config.stt_min_seconds:
+            # Ein Tippen auf die Taste ist ein Verklicker, kein Diktat. Ohne
+            # diese Sperre erfindet Whisper aus dem Bruchteil einer Sekunde
+            # einen Satz.
+            self.dictation.path.unlink(missing_ok=True)
+            self._refresh("Diktat zu kurz – verworfen")
+            # Wie „zu leise": ein verworfenes Diktat ist ein Ergebnis, das der
+            # Nutzer erfahren muss. Nur in der Statuszeile blieb es unbemerkt.
+            self._notify(
+                "Diktat",
+                f"Zu kurz – verworfen (unter {self.config.stt_min_seconds} s "
+                "gehalten).",
+                QSystemTrayIcon.MessageIcon.Warning,
+                3000,
+            )
+            return
+        # Die Ablage **hier** sichern, nicht erst im Faden: `shutdown()` bricht
+        # eine hängende Erkennung mit `terminate()` ab, und das rollt keine
+        # Python-Frames ab — trifft es das 0,3-s-Fenster in `stt.paste()`,
+        # bleibt der Diktattext in CLIPBOARD und PRIMARY stehen und der
+        # vorherige Inhalt ist weg. Ein try/finally im Faden hilft dagegen
+        # nicht, terminate() umgeht es. Also hält der Controller eine eigene
+        # Kopie und legt sie nach dem Abbruch im GUI-Faden zurück.
+        self._stt_clipboard = (
+            snapshot_clipboard() if self.config.stt_clipboard_restore else None
+        )
+        worker = DictationThread(
+            self.dictation.path,
+            model=self.config.stt_model,
+            language=self.config.stt_language,
+            device=self.config.stt_device,
+            threshold=self.config.stt_threshold,
+            clipboard_restore=self.config.stt_clipboard_restore,
+        )
+        self.stt = worker
+        worker.result.connect(lambda ok, message: self._dictation_result(worker, ok, message))
+        worker.finished.connect(lambda: self._dictation_finished(worker))
+        worker.start()
+        self._refresh()
+
+    def _dictation_result(self, worker: DictationThread, ok: bool, message: str) -> None:
+        if worker is not self.stt:
+            return
+        self._last_stt_status = message
+        if not ok:
+            self._notify(
+                "Diktat", message, QSystemTrayIcon.MessageIcon.Warning, 5000
+            )
+        elif self.recorder.is_recording:
+            # Läuft nebenher eine Aufnahme, nimmt ihr Sekundentakt die
+            # Statuszeile binnen einer Sekunde zurück – dann ist die
+            # Benachrichtigung der einzige Weg, der ankommt.
+            self._notify(
+                "Diktat", message, QSystemTrayIcon.MessageIcon.Information, 3000
+            )
+
+    def _dictation_finished(self, worker: DictationThread) -> None:
+        if worker is not self.stt:
+            return
+        self.stt = None
+        self._stt_clipboard = None
+        self._refresh(self._last_stt_status)
 
     def start_recording(self) -> None:
         if not self.config.enabled or self.recorder.is_recording:
@@ -610,10 +891,33 @@ class TrayApplication:
         self.speech = None
 
     def hotkey_error(self, message: str) -> None:
+        self._hotkey_failed = True
         self._refresh("Hotkey nicht verfügbar")
         self._notify(
             "Hotkey nicht verfügbar", message,
             QSystemTrayIcon.MessageIcon.Critical, 6000,
+        )
+
+    def hotkey_degraded(self, missing: list[str]) -> None:
+        """Teilausfall: der Rest läuft weiter, das Fehlende wird benannt.
+
+        Warning statt Critical und kein graues Symbol — eine intakte Aufnahme
+        als kaputt auszuweisen wäre schlimmer als die Lücke. Aber still bleibt
+        es nicht: der Bereit-Text nennt ab jetzt nur die bedienten Kürzel.
+        """
+        self._hotkey_missing = set(missing)
+        labels = {
+            "record": f"{shortcut_label(self.config)} (Aufnahme)",
+            "tts": f"{shortcut_label(self.config, tts=True)} (Vorlesen)",
+            "stt": f"{shortcut_label(self.config, stt=True)} (Diktat)",
+        }
+        broken = ", ".join(labels.get(name, name) for name in missing)
+        self._refresh()
+        self._notify(
+            "Hotkey teilweise nicht verfügbar",
+            f"Keine angeschlossene Tastatur hat die Tasten für {broken}. "
+            "Wähle in den Einstellungen eine andere Kombination.",
+            QSystemTrayIcon.MessageIcon.Warning, 6000,
         )
 
     def open_folder(self) -> None:
@@ -636,6 +940,10 @@ class TrayApplication:
             f"Vorlesen-Hotkey {shortcut_label(self.config, tts=True)} aktiv"
         )
         self.tts_enabled_action.setChecked(self.config.tts_enabled)
+        self.stt_enabled_action.setText(
+            f"Diktat-Hotkey {shortcut_label(self.config, stt=True)} aktiv"
+        )
+        self.stt_enabled_action.setChecked(self.config.stt_enabled)
         self._restart_hotkey()
         self._refresh()
 
@@ -654,6 +962,38 @@ class TrayApplication:
                 self.hotkey.terminate()
                 self.hotkey.wait(500)
             self.hotkey = None
+        # Laufendes Diktat: erst die Aufnahme wegwerfen, dann die Erkennung
+        # einsammeln — sonst bleibt pw-record verwaist stehen.
+        if self.dictation.is_recording:
+            self.dictation.cancel()
+        else:
+            # Auch ohne laufende Aufnahme: die WAV mit dem Gesprochenen gehört
+            # dem Faden, und `terminate()` überspringt dessen `finally`. Ohne
+            # dieses unlink überlebt die Sprachaufnahme das Programmende.
+            self.dictation.path.unlink(missing_ok=True)
+        if self.stt is not None:
+            if self.stt.isRunning() and not self.stt.wait(2000):
+                # Kein „QThread destroyed while running" beim Prozessende.
+                # Die Erkennung ist unterbrechbar: die Aufnahme ist ohnehin weg.
+                self.stt.terminate()
+                self.stt.wait(500)
+                # terminate() kann mitten im Einfügen getroffen haben; dann
+                # steht der Diktattext in beiden Ablagen. Die Kopie aus
+                # `finish_dictation` zurücklegen, im GUI-Faden.
+                #
+                # Nur wenn der Faden die Ablage überhaupt angefasst hat: in der
+                # Regel trifft terminate() die Erkennung (1,3 s auf der GPU,
+                # deutlich mehr auf der CPU) und nicht das 0,3-s-Fenster in
+                # `paste()`. Blind zurückschreiben hieße, den unveränderten
+                # Inhalt des Nutzers mit `--sensitive` neu zu setzen — und das
+                # nimmt ihn aus der Klipper-Historie, obwohl PTR die Ablage nie
+                # angerührt hat.
+                saved = getattr(self, "_stt_clipboard", None)
+                if saved is not None and getattr(self.stt, "clipboard_touched", False):
+                    restore_clipboard(saved[0])
+                    restore_clipboard(saved[1], primary=True)
+            self.stt = None
+        self._stt_clipboard = None
         self.stop_speaking()
         if self.speech is not None and self.speech.isRunning():
             # Letzte Rettung beim Beenden: kein „QThread destroyed while running".
