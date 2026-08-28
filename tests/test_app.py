@@ -93,6 +93,7 @@ def _tray_app_without_gui() -> TrayApplication:
     app.icon_disabled = "grau"
     app.icon_dictating = "orange"
     app.icon_recording = "rot"
+    app.icon_speaking = "blau"
     app.status_action = FakeAction()
     return app
 
@@ -113,6 +114,9 @@ def test_restart_hotkey_clears_the_failure_flag():
     app = _tray_app_without_gui()
     app.config.enabled = False
     app.config.tts_enabled = False
+    # Auch das Abbrechen aus: sonst startet `_restart_hotkey` einen echten
+    # evdev-Faden, und der Test prüft nur die Merker.
+    app.config.stop_enabled = False
     app._hotkey_failed = True
     app._hotkey_missing = {"tts"}
     app._restart_hotkey()
@@ -123,17 +127,19 @@ def test_restart_hotkey_clears_the_failure_flag():
 def test_partial_hotkey_failure_warns_and_names_only_working_shortcuts():
     app = _tray_app_without_gui()
     app._refresh()
-    assert app.status_action.text == "Bereit: Meta+F8 Aufnahme · Meta+F9 Vorlesen"
+    assert app.status_action.text == (
+        "Bereit: Meta+F8 Aufnahme · Meta+Rollen Vorlesen · Meta+Y Abbrechen"
+    )
     app.hotkey_degraded(["tts"])
     # Grün bleibt grün: die Aufnahme ist intakt, nur das Vorlesen fällt weg.
     assert app.tray.icon == "gruen"
-    assert app.status_action.text == "Bereit: Meta+F8 Aufnahme"
+    assert app.status_action.text == "Bereit: Meta+F8 Aufnahme · Meta+Y Abbrechen"
     title, message, icon, _msecs = app.tray.calls[-1]
     assert icon == WARNING
-    assert "Meta+F9 (Vorlesen)" in message
+    assert "Meta+Rollen (Vorlesen)" in message
     # Auch nach dem nächsten Auffrischer bleibt das tote Kürzel draußen.
     app._refresh()
-    assert app.status_action.text == "Bereit: Meta+F8 Aufnahme"
+    assert app.status_action.text == "Bereit: Meta+F8 Aufnahme · Meta+Y Abbrechen"
 
 
 def test_notify_shows_everything_when_enabled():
@@ -230,6 +236,55 @@ def test_settings_rejects_dictation_colliding_with_recording(qapp, monkeypatch):
     assert warnings and "Aufnahme- und Diktat" in warnings[0][2]
 
 
+def test_settings_rejects_cancel_colliding_with_read_aloud(qapp, monkeypatch):
+    """Das vierte Kürzel geht durch dieselbe Prüfung wie die drei anderen."""
+    dialog = _dialog(qapp, monkeypatch)
+    dialog.stop_trigger.setCurrentIndex(dialog.tts_trigger.currentIndex())
+    dialog.stop_modifier.setCurrentText(dialog.tts_modifier.currentText())
+    warnings = []
+    monkeypatch.setattr(
+        QMessageBox, "warning", staticmethod(lambda *args: warnings.append(args))
+    )
+    dialog.accept()
+    assert warnings and "Vorlesen- und Abbrechen" in warnings[0][2]
+    assert dialog.result() != QDialog.DialogCode.Accepted
+
+
+def test_settings_catches_every_pair(qapp, monkeypatch):
+    """Jedes Paar, nicht nur die mit der Aufnahme: alle sechs werden geprüft."""
+    pairs = [
+        (("modifier", "trigger"), ("tts_modifier", "tts_trigger")),
+        (("modifier", "trigger"), ("stt_modifier", "stt_trigger")),
+        (("modifier", "trigger"), ("stop_modifier", "stop_trigger")),
+        (("tts_modifier", "tts_trigger"), ("stt_modifier", "stt_trigger")),
+        (("tts_modifier", "tts_trigger"), ("stop_modifier", "stop_trigger")),
+        (("stt_modifier", "stt_trigger"), ("stop_modifier", "stop_trigger")),
+    ]
+    for (mod_a, trig_a), (mod_b, trig_b) in pairs:
+        dialog = _dialog(qapp, monkeypatch)
+        getattr(dialog, trig_b).setCurrentIndex(getattr(dialog, trig_a).currentIndex())
+        getattr(dialog, mod_b).setCurrentText(getattr(dialog, mod_a).currentText())
+        warnings = []
+        monkeypatch.setattr(
+            QMessageBox, "warning", staticmethod(lambda *args: warnings.append(args))
+        )
+        dialog.accept()
+        assert warnings, f"{trig_a} == {trig_b} blieb unbemerkt"
+        assert dialog.result() != QDialog.DialogCode.Accepted
+
+
+def test_settings_apply_writes_the_cancel_fields(qapp, monkeypatch):
+    dialog = _dialog(qapp, monkeypatch)
+    dialog.stop_enabled.setChecked(False)
+    dialog.stop_trigger.setCurrentIndex(dialog.stop_trigger.findData("KEY_F11"))
+    dialog.stop_modifier.setCurrentText("Strg+Alt")
+    config = Config(output_dir="/tmp")
+    dialog.apply(config)
+    assert config.stop_enabled is False
+    assert config.stop_trigger_key == "KEY_F11"
+    assert config.stop_modifiers == ("KEY_LEFTCTRL", "KEY_LEFTALT")
+
+
 def test_settings_apply_writes_the_dictation_fields(qapp, monkeypatch):
     dialog = _dialog(qapp, monkeypatch)
     dialog.stt_enabled.setChecked(True)
@@ -312,6 +367,7 @@ def test_restart_hotkey_cancels_a_running_dictation(tmp_path):
     app.config.enabled = False
     app.config.tts_enabled = False
     app.config.stt_enabled = False
+    app.config.stop_enabled = False
     app.dictation.start()
     app._restart_hotkey()
     assert app.dictation.cancelled == 1
@@ -325,6 +381,7 @@ def test_release_after_restart_does_nothing(tmp_path):
     app.config.enabled = False
     app.config.tts_enabled = False
     app.config.stt_enabled = False
+    app.config.stop_enabled = False
     app.dictation.start()
     app._restart_hotkey()
     app.finish_dictation()
@@ -341,6 +398,7 @@ def test_ready_state_counts_the_dictation_alone():
     app.config.enabled = False
     app.config.tts_enabled = False
     app.config.stt_enabled = True
+    app.config.stop_enabled = False
     app._refresh()
     assert app.tray.icon == "gruen"
     assert app.status_action.text == "Bereit: Meta+Pause Diktat"
@@ -449,13 +507,147 @@ def test_shutdown_leaves_an_untouched_clipboard_alone(tmp_path, monkeypatch):
 def test_dictation_shortcut_is_named_and_can_degrade():
     app = _tray_app_without_gui()
     app.config.stt_enabled = True
+    app.config.stop_enabled = False
     app._refresh()
     assert app.status_action.text == (
-        "Bereit: Meta+F8 Aufnahme · Meta+F9 Vorlesen · Meta+Pause Diktat"
+        "Bereit: Meta+F8 Aufnahme · Meta+Rollen Vorlesen · Meta+Pause Diktat"
     )
     app.hotkey_degraded(["stt"])
-    assert app.status_action.text == "Bereit: Meta+F8 Aufnahme · Meta+F9 Vorlesen"
+    assert app.status_action.text == "Bereit: Meta+F8 Aufnahme · Meta+Rollen Vorlesen"
     assert "Meta+Pause (Diktat)" in app.tray.calls[-1][1]
+
+
+# --- Abbrechen (viertes Kürzel) ---------------------------------------------
+
+
+class _FakeSpeech:
+    """Steht für SpeechThread: derselbe Zustand, ohne Mimic."""
+
+    def __init__(self):
+        self.running = True
+        self.stopped = 0
+
+    def isRunning(self):
+        return self.running
+
+    def stop(self):
+        self.stopped += 1
+        self.running = False
+
+    def wait(self, msecs):
+        return True
+
+
+class _FakeRecognition:
+    """Steht für DictationThread, so weit `cancel_playback` ihn anfasst."""
+
+    def __init__(self):
+        self.cancelled = False
+
+    def isRunning(self):
+        return True
+
+    def cancel(self):
+        self.cancelled = True
+
+
+def _no_new_speech(monkeypatch):
+    monkeypatch.setattr(
+        app_module, "SpeechThread",
+        lambda *args, **kwargs: pytest.fail("Abbrechen darf nichts Neues starten"),
+    )
+
+
+def test_cancel_ends_the_playback_without_starting_a_new_one(monkeypatch):
+    """Der Unterschied zum zweiten Druck auf das Vorlesen-Kürzel: kein neues Vorlesen."""
+    app = _tray_app_without_gui()
+    _no_new_speech(monkeypatch)
+    speech = _FakeSpeech()
+    app.speech = speech
+    app.cancel_playback()
+    assert speech.stopped == 1
+    assert app.speech is None
+    assert app.status_action.text == "Vorlesen abgebrochen"
+
+
+class _FakeSpeechThread(QObject):
+    """Steht für einen frisch gestarteten SpeechThread, samt Signalen."""
+
+    playback_started = Signal()
+    result = Signal(bool, str)
+    finished = Signal()
+
+    def isRunning(self):
+        return True
+
+    def start(self):
+        pass
+
+
+def test_speak_shortcut_still_restarts(qapp, monkeypatch):
+    """Gegenprobe: das Vorlesen-Kürzel stoppt und legt sofort nach – das ist der Bestand."""
+    app = _tray_app_without_gui()
+    started = []
+    monkeypatch.setattr(
+        app_module, "SpeechThread",
+        lambda *args, **kwargs: started.append(True) or _FakeSpeechThread(),
+    )
+    speech = _FakeSpeech()
+    app.speech = speech
+    app.speak_selected_text()
+    assert speech.stopped == 1 and started == [True]
+
+
+def test_cancel_into_the_void_does_nothing(monkeypatch):
+    app = _tray_app_without_gui()
+    _no_new_speech(monkeypatch)
+    app.cancel_playback()
+    assert app.tray.calls == []
+    assert app.status_action.text is None
+    assert app.speech is None
+
+
+def test_cancel_ends_a_running_dictation_recording(monkeypatch):
+    app = _tray_app_without_gui()
+    _no_new_speech(monkeypatch)
+    app.dictation.start()
+    app.cancel_playback()
+    assert app.dictation.cancelled == 1
+    assert app.status_action.text == "Diktat abgebrochen"
+
+
+def test_cancel_drops_a_running_recognition(monkeypatch):
+    """Und die nachgereichte Meldung des Fadens überschreibt den Abbruch nicht."""
+    app = _tray_app_without_gui()
+    _no_new_speech(monkeypatch)
+    worker = _FakeRecognition()
+    app.stt = worker
+    app.cancel_playback()
+    assert worker.cancelled is True
+    assert app._last_stt_status == "Diktat abgebrochen"
+    app._dictation_result(worker, False, "Nichts verstanden")
+    assert app._last_stt_status == "Diktat abgebrochen"
+    assert app.tray.calls == []
+
+
+def test_cancel_takes_both_at_once(monkeypatch):
+    """Vorlesen und Diktat können gleichzeitig laufen – beides fällt."""
+    app = _tray_app_without_gui()
+    _no_new_speech(monkeypatch)
+    app.speech = _FakeSpeech()
+    app.dictation.start()
+    app.cancel_playback()
+    assert app.status_action.text == "Vorlesen abgebrochen · Diktat abgebrochen"
+
+
+def test_cancel_is_silent_when_the_shortcut_is_off(monkeypatch):
+    app = _tray_app_without_gui()
+    _no_new_speech(monkeypatch)
+    app.config.stop_enabled = False
+    speech = _FakeSpeech()
+    app.speech = speech
+    app.cancel_playback()
+    assert speech.stopped == 0 and app.speech is speech
 
 
 # --- Sekundentakt und Menüs -------------------------------------------------

@@ -1,15 +1,19 @@
 # PC-Ton & Vorlesen
 
-Eine kleine KDE/Wayland-Tray-App mit drei getrennten Funktionen:
+Eine kleine KDE/Wayland-Tray-App mit vier getrennten Funktionen:
 
 - **Meta+F8** startet die Aufnahme des Tons vom aktuellen Standard-Audioausgang.
   Ein zweiter Druck stoppt sie und speichert die Datei (MP3, FLAC, OGG oder WAV).
-- **Meta+F9** liest den gerade markierten Text mit Mimic vor.
+- **Meta+Rollen** liest den gerade markierten Text mit Mimic vor.
 - **Meta+Pause** ist das Diktat: halten, sprechen, loslassen – der erkannte Text
   wird ins fokussierte Fenster eingefügt. Standardmäßig aus, in den
   Einstellungen einzuschalten.
+- **Meta+Y** bricht ab, was gerade läuft: ein Vorlesen, ein laufendes Diktat.
+  Es startet nie etwas Neues – anders als ein zweiter Druck auf das Vorlesen-Kürzel, der
+  die Wiedergabe zwar beendet, aber sofort wieder von vorn anfängt. Läuft
+  nichts, passiert nichts.
 
-Alle drei Hotkeys sind in den Einstellungen frei wählbar (Modifier + Taste).
+Alle vier Hotkeys sind in den Einstellungen frei wählbar (Modifier + Taste).
 
 ## Bedienung
 
@@ -43,7 +47,10 @@ aufgenommen.
 - **Zwischenablage-Fallback**: Wenn kein Text markiert ist, wird zusätzlich
   die Zwischenablage gelesen (`wl-paste`, unter X11 `xclip`). Bewusstes
   Opt-in – die Zwischenablage kann vertrauliche Inhalte (z. B. aus
-  Passwortmanagern) enthalten.
+  Passwortmanagern) enthalten. Zusammen mit dem Diktat überrascht das: Das
+  Diktat legt seinen Text in der Zwischenablage ab, also liest das Vorlesen ohne
+  Markierung genau den zuletzt diktierten Satz vor. Kein Fehler, aber gut zu
+  wissen – wer das nicht will, markiert vorher Text oder lässt den Fallback aus.
 
 ## Diktat (Meta+Pause)
 
@@ -65,6 +72,29 @@ gibt es keinen anderen Weg in ein fremdes Fenster.
   Wayland lässt sich das Zielfenster nicht festlegen.
 - Nach dem Diktat bleiben rund 500 MiB VRAM belegt (CUDA-Kontext), bis PTR
   beendet wird. Das Modellgewicht selbst wird sofort wieder freigegeben.
+
+## Bekannte Stolperstellen
+
+**Meta+F9 und Meta+F10 gehören unter KDE schon KWin.** Deshalb liegt das
+Vorlesen ab Werk auf **Meta+Rollen** und nicht, wie ursprünglich, auf Meta+F9.
+Wer eine F-Taste dafür wählt, trifft in der Standardbelegung auf
+`~/.config/kglobalshortcutsrc`:
+
+```
+Expose    = Ctrl+F9 \t Meta+F9    "Fenster der aktuellen Arbeitsfläche anzeigen"
+ExposeAll = Ctrl+F10 \t Meta+F10  "Fenster aller Arbeitsflächen anzeigen"
+```
+
+Beides feuert dann gleichzeitig: PTR liest die Tasten eine Ebene tiefer über
+evdev, KWin hat seinen Griff zusätzlich. Das ist keine Fehlfunktion von PTR und
+lässt sich in PTR auch nicht reparieren. Zwei Wege heraus:
+
+- In den Systemeinstellungen unter **Kurzbefehle → KWin → „Fenster der
+  aktuellen Arbeitsfläche anzeigen"** das Kürzel ändern oder entfernen.
+- Oder in den Einstellungen von PTR eine andere Kombination fürs Vorlesen
+  wählen.
+
+Dasselbe gilt für jedes andere Kürzel, das der Desktop bereits belegt.
 
 ## Voraussetzungen
 

@@ -322,6 +322,29 @@ def test_thread_transcribes_and_pastes(qapp, tmp_path, monkeypatch):
     assert not path.exists()
 
 
+def test_cancelled_thread_does_not_paste(qapp, tmp_path, monkeypatch):
+    """Abbruch während der Erkennung: der Text darf nicht mehr irgendwo landen.
+
+    `cancel()` fällt im Ernstfall mitten in `recognize()` — hier gesetzt, sobald
+    die Erkennung aufgerufen wird.
+    """
+    path = _wav(tmp_path / "laut.wav", seconds=2.0, amplitude=8000)
+    monkeypatch.setattr(stt, "load_model", lambda *args, **kwargs: object())
+    monkeypatch.setattr(
+        stt, "paste",
+        lambda text, restore=True: pytest.fail("Abgebrochenes Diktat darf nicht einfügen"),
+    )
+    thread = stt.DictationThread(path)
+    monkeypatch.setattr(
+        stt, "transcribe",
+        lambda model, wav, language: (thread.cancel(), "Hallo Welt")[1],
+    )
+    assert _run_thread(qapp, thread) == []
+    assert thread.clipboard_touched is False
+    # Die Sprachaufnahme wird auch beim Abbruch weggeräumt.
+    assert not path.exists()
+
+
 def test_recognize_falls_back_to_cpu_when_cuda_fails_late(monkeypatch, tmp_path):
     """ctranslate2 baut verzögert: die fehlende libcublas fliegt erst hier auf."""
     devices = []

@@ -116,6 +116,14 @@ class SettingsDialog(QDialog):
         stt_shortcut_row.addWidget(QLabel("+"))
         stt_shortcut_row.addWidget(self.stt_trigger)
 
+        self.stop_modifier, self.stop_trigger = self._shortcut_widgets(
+            config.stop_modifiers, config.stop_trigger_key
+        )
+        stop_shortcut_row = QHBoxLayout()
+        stop_shortcut_row.addWidget(self.stop_modifier)
+        stop_shortcut_row.addWidget(QLabel("+"))
+        stop_shortcut_row.addWidget(self.stop_trigger)
+
         self.format = QComboBox()
         for key in FORMATS:
             self.format.addItem(key.upper(), key)
@@ -179,6 +187,10 @@ class SettingsDialog(QDialog):
             "Zwischenablage als Fallback nutzen, wenn kein Text markiert ist"
         )
         self.clipboard_fallback.setChecked(config.tts_clipboard_fallback)
+        self.stop_enabled = QCheckBox(
+            f"Vorlesen/Diktat mit {shortcut_label(config, stop=True)} abbrechen"
+        )
+        self.stop_enabled.setChecked(config.stop_enabled)
         clipboard_warning = QLabel(
             "Achtung: Die Zwischenablage kann vertrauliche Inhalte enthalten "
             "(z. B. aus Passwortmanagern)."
@@ -238,6 +250,7 @@ class SettingsDialog(QDialog):
         form.addRow("Aufnahme-Hotkey:", shortcut_row)
         form.addRow("Vorlesen-Hotkey:", tts_shortcut_row)
         form.addRow("Diktat-Hotkey:", stt_shortcut_row)
+        form.addRow("Abbrechen-Hotkey:", stop_shortcut_row)
         form.addRow("Diktat-Modell:", self.stt_model)
         form.addRow("Diktat-Sprache:", self.stt_language)
         form.addRow("Diktat-Stilleschwelle:", self.stt_threshold)
@@ -264,7 +277,7 @@ class SettingsDialog(QDialog):
             self.tts_enabled, self.voice_hint, self.notifications,
             self.silence_warn, self.clipboard_fallback, clipboard_warning,
             self.stt_enabled, self.stt_clipboard_restore, stt_clipboard_hint,
-            self.autostart,
+            self.stop_enabled, self.autostart,
         ):
             inner_layout.addWidget(widget)
         scroll = QScrollArea()
@@ -342,12 +355,15 @@ class SettingsDialog(QDialog):
 
     def accept(self) -> None:
         # Immer ablehnen, unabhängig von den aktiviert-Checkboxen: die
-        # Konfiguration selbst soll gar nicht kollidieren können. Drei
-        # Funktionen heißen drei Paarvergleiche, nicht einer.
+        # Konfiguration selbst soll gar nicht kollidieren können. Über die Liste
+        # statt paarweise verdrahtet: vier Funktionen wären sechs feste
+        # Vergleiche, fünf wären zehn — so kostet die nächste Funktion eine
+        # Zeile und keine Fallunterscheidung.
         combinations = {
             "Aufnahme": self._shortcut(self.modifier, self.trigger),
             "Vorlesen": self._shortcut(self.tts_modifier, self.tts_trigger),
             "Diktat": self._shortcut(self.stt_modifier, self.stt_trigger),
+            "Abbrechen": self._shortcut(self.stop_modifier, self.stop_trigger),
         }
         names = list(combinations)
         for index, first in enumerate(names):
@@ -387,6 +403,9 @@ class SettingsDialog(QDialog):
         config.stt_language = self.stt_language.currentData()
         config.stt_threshold = self.stt_threshold.value()
         config.stt_clipboard_restore = self.stt_clipboard_restore.isChecked()
+        config.stop_enabled = self.stop_enabled.isChecked()
+        config.stop_modifiers = MODIFIER_OPTIONS[self.stop_modifier.currentText()]
+        config.stop_trigger_key = self.stop_trigger.currentData()
 
 
 class TrayApplication:
@@ -436,6 +455,12 @@ class TrayApplication:
         self.stt_enabled_action.setCheckable(True)
         self.stt_enabled_action.setChecked(self.config.stt_enabled)
         self.stt_enabled_action.toggled.connect(self.set_stt_enabled)
+        self.stop_enabled_action = QAction(
+            f"Abbrechen-Hotkey {shortcut_label(self.config, stop=True)} aktiv", self.menu
+        )
+        self.stop_enabled_action.setCheckable(True)
+        self.stop_enabled_action.setChecked(self.config.stop_enabled)
+        self.stop_enabled_action.toggled.connect(self.set_stop_enabled)
         self.status_action = QAction("Bereit", self.menu)
         self.status_action.setEnabled(False)
         self.recent_menu = QMenu("Letzte Aufnahmen", self.menu)
@@ -449,6 +474,7 @@ class TrayApplication:
         self.menu.addAction(self.enabled_action)
         self.menu.addAction(self.tts_enabled_action)
         self.menu.addAction(self.stt_enabled_action)
+        self.menu.addAction(self.stop_enabled_action)
         self.menu.addAction(self.status_action)
         self.menu.addSeparator()
         self.menu.addMenu(self.recent_menu)
@@ -517,7 +543,12 @@ class TrayApplication:
         # Thread `unavailable` bzw. `degraded` wieder meldet.
         self._hotkey_failed = False
         self._hotkey_missing = set()
-        if self.config.enabled or self.config.tts_enabled or self.config.stt_enabled:
+        if (
+            self.config.enabled
+            or self.config.tts_enabled
+            or self.config.stt_enabled
+            or self.config.stop_enabled
+        ):
             self.hotkey = HotkeyThread(
                 self.config.trigger_key,
                 self.config.modifiers,
@@ -528,11 +559,15 @@ class TrayApplication:
                 stt_trigger=self.config.stt_trigger_key,
                 stt_modifiers=self.config.stt_modifiers,
                 stt_enabled=self.config.stt_enabled,
+                stop_trigger=self.config.stop_trigger_key,
+                stop_modifiers=self.config.stop_modifiers,
+                stop_enabled=self.config.stop_enabled,
             )
             self.hotkey.pressed.connect(self.toggle_recording)
             self.hotkey.read_aloud_pressed.connect(self.speak_selected_text)
             self.hotkey.stt_pressed.connect(self.start_dictation)
             self.hotkey.stt_released.connect(self.finish_dictation)
+            self.hotkey.stop_pressed.connect(self.cancel_playback)
             self.hotkey.unavailable.connect(self.hotkey_error)
             self.hotkey.degraded.connect(self.hotkey_degraded)
             self.hotkey.start()
@@ -575,6 +610,8 @@ class TrayApplication:
             shortcuts.append(f"{shortcut_label(self.config, tts=True)} Vorlesen")
         if self.config.stt_enabled and "stt" not in self._hotkey_missing:
             shortcuts.append(f"{shortcut_label(self.config, stt=True)} Diktat")
+        if self.config.stop_enabled and "stop" not in self._hotkey_missing:
+            shortcuts.append(f"{shortcut_label(self.config, stop=True)} Abbrechen")
         return shortcuts
 
     def _dictation_status(self) -> tuple[str, str] | None:
@@ -619,7 +656,12 @@ class TrayApplication:
             self.tray.setIcon(self.icon_disabled)
             self.tray.setToolTip("PC-Ton & Vorlesen – Hotkey nicht verfügbar")
             self.status_action.setText(status or "Hotkey nicht verfügbar")
-        elif self.config.enabled or self.config.tts_enabled or self.config.stt_enabled:
+        elif (
+            self.config.enabled
+            or self.config.tts_enabled
+            or self.config.stt_enabled
+            or self.config.stop_enabled
+        ):
             self.tray.setIcon(self.icon_idle)
             ready = " · ".join(self._ready_shortcuts()) or "kein Kürzel bedient"
             self.tray.setToolTip(f"PC-Ton & Vorlesen – bereit ({ready})")
@@ -678,6 +720,41 @@ class TrayApplication:
         self.config.save()
         self._restart_hotkey()
         self._refresh()
+
+    def set_stop_enabled(self, enabled: bool) -> None:
+        # Kein Aufräumen beim Ausschalten: das Abbrechen hält keinen Zustand.
+        self.config.stop_enabled = enabled
+        self.config.save()
+        self._restart_hotkey()
+        self._refresh()
+
+    def cancel_playback(self) -> None:
+        """Beendet, was gerade läuft — und startet grundsätzlich nichts Neues.
+
+        Der Unterschied zu einem zweiten Druck auf das Vorlese-Kürzel: das
+        stoppt zwar auch, legt aber sofort ein neues Vorlesen nach. Bricht
+        nichts ab, weil nichts läuft, ist das kein Fehler und wird nicht
+        gemeldet.
+        """
+        if not self.config.stop_enabled:
+            return
+        cancelled: list[str] = []
+        if self.speech is not None and self.speech.isRunning():
+            self.stop_speaking()
+            self._last_speech_status = "Vorlesen abgebrochen"
+            cancelled.append("Vorlesen abgebrochen")
+        # Diktat: entweder läuft noch die Aufnahme oder schon die Erkennung.
+        # Nie beides, deshalb elif.
+        if self.dictation.is_recording:
+            self.dictation.cancel()
+            self._last_stt_status = "Diktat abgebrochen"
+            cancelled.append("Diktat abgebrochen")
+        elif self.stt is not None and self.stt.isRunning():
+            self.stt.cancel()
+            self._last_stt_status = "Diktat abgebrochen"
+            cancelled.append("Diktat abgebrochen")
+        if cancelled:
+            self._refresh(" · ".join(cancelled))
 
     # --- Diktat -----------------------------------------------------------
 
@@ -754,6 +831,11 @@ class TrayApplication:
 
     def _dictation_result(self, worker: DictationThread, ok: bool, message: str) -> None:
         if worker is not self.stt:
+            return
+        if getattr(worker, "cancelled", False):
+            # Abgebrochen: eine nachgereichte Meldung („Zu leise", „Nichts
+            # verstanden") überschriebe sonst das „Diktat abgebrochen" und
+            # ließe den Abbruch wie ein Erkennungsproblem aussehen.
             return
         self._last_stt_status = message
         if not ok:
@@ -910,6 +992,7 @@ class TrayApplication:
             "record": f"{shortcut_label(self.config)} (Aufnahme)",
             "tts": f"{shortcut_label(self.config, tts=True)} (Vorlesen)",
             "stt": f"{shortcut_label(self.config, stt=True)} (Diktat)",
+            "stop": f"{shortcut_label(self.config, stop=True)} (Abbrechen)",
         }
         broken = ", ".join(labels.get(name, name) for name in missing)
         self._refresh()
@@ -944,6 +1027,10 @@ class TrayApplication:
             f"Diktat-Hotkey {shortcut_label(self.config, stt=True)} aktiv"
         )
         self.stt_enabled_action.setChecked(self.config.stt_enabled)
+        self.stop_enabled_action.setText(
+            f"Abbrechen-Hotkey {shortcut_label(self.config, stop=True)} aktiv"
+        )
+        self.stop_enabled_action.setChecked(self.config.stop_enabled)
         self._restart_hotkey()
         self._refresh()
 

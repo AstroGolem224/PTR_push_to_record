@@ -69,13 +69,13 @@ def test_old_config_receives_recording_defaults(tmp_path):
     assert config.max_minutes == 0
     assert config.notifications is True
     assert config.silence_warn is True
-    assert config.tts_trigger_key == "KEY_F9"
+    assert config.tts_trigger_key == "KEY_SCROLLLOCK"
     assert config.tts_modifiers == ("KEY_LEFTMETA",)
     assert config.tts_clipboard_fallback is False
 
 
 def test_shortcut_label_tts():
-    assert shortcut_label(Config(output_dir="/tmp"), tts=True) == "Meta+F9"
+    assert shortcut_label(Config(output_dir="/tmp"), tts=True) == "Meta+Rollen"
 
 
 def test_shortcut_label_stt():

@@ -8,7 +8,7 @@ from pc_sound_recorder.hotkey import HotkeyThread, invalid_key_names
 
 
 def test_invalid_key_names_accepts_known_keys():
-    assert invalid_key_names(["KEY_F8", "KEY_F9", "KEY_LEFTMETA"]) == []
+    assert invalid_key_names(["KEY_F8", "KEY_SCROLLLOCK", "KEY_LEFTMETA"]) == []
 
 
 def test_invalid_key_names_flags_unknown_keys():
@@ -54,8 +54,8 @@ def test_hotkey_thread_ignores_invalid_tts_keys_when_disabled():
 
 # --- Ereignisschleife an simulierten Tastaturen ---
 
-FULL = ("KEY_F8", "KEY_F9", "KEY_LEFTMETA", "KEY_PAUSE")
-NO_PAUSE = ("KEY_F8", "KEY_F9", "KEY_LEFTMETA")
+FULL = ("KEY_F8", "KEY_SCROLLLOCK", "KEY_LEFTMETA", "KEY_PAUSE")
+NO_PAUSE = ("KEY_F8", "KEY_SCROLLLOCK", "KEY_LEFTMETA")
 
 
 class _FakeDevice:
@@ -156,6 +156,7 @@ def _run(thread: HotkeyThread, devices, monkeypatch) -> list[str]:
     thread.read_aloud_pressed.connect(lambda: fired.append("tts"))
     thread.stt_pressed.connect(lambda: fired.append("stt_pressed"))
     thread.stt_released.connect(lambda: fired.append("stt_released"))
+    thread.stop_pressed.connect(lambda: fired.append("stop"))
     thread.unavailable.connect(lambda message: fired.append(f"unavailable:{message}"))
     thread.run()
     return fired
@@ -174,7 +175,7 @@ def test_keyboard_without_stt_key_keeps_record_and_tts(monkeypatch):
         [[
             _key("KEY_LEFTMETA", 1),
             _key("KEY_F8", 1), _key("KEY_F8", 0),
-            _key("KEY_F9", 1), _key("KEY_F9", 0),
+            _key("KEY_SCROLLLOCK", 1), _key("KEY_SCROLLLOCK", 0),
             _key("KEY_LEFTMETA", 0),
         ]],
     )
@@ -251,45 +252,90 @@ def test_partial_failure_is_reported_not_swallowed(monkeypatch):
     assert missing == [["stt"]]
 
 
+# --- Viertes Kürzel: Abbrechen ---
+
+WITH_Y = FULL + ("KEY_Y",)
+
+
+def test_stop_shortcut_fires(monkeypatch):
+    thread = HotkeyThread("KEY_F8", ("KEY_LEFTMETA",), stop_enabled=True)
+    device = _FakeDevice(
+        "Tastatur", WITH_Y,
+        [[_key("KEY_LEFTMETA", 1), _key("KEY_Y", 1), _key("KEY_Y", 0)]],
+    )
+    assert _run(thread, [device], monkeypatch) == ["stop"]
+
+
+def test_stop_needs_its_modifier(monkeypatch):
+    """Y allein ist ein Buchstabe, kein Abbruch."""
+    thread = HotkeyThread("KEY_F8", ("KEY_LEFTMETA",), stop_enabled=True)
+    device = _FakeDevice("Tastatur", WITH_Y, [[_key("KEY_Y", 1), _key("KEY_Y", 0)]])
+    assert _run(thread, [device], monkeypatch) == []
+
+
+def test_stop_disabled_emits_nothing(monkeypatch):
+    thread = HotkeyThread("KEY_F8", ("KEY_LEFTMETA",))
+    device = _FakeDevice(
+        "Tastatur", WITH_Y,
+        [[_key("KEY_LEFTMETA", 1), _key("KEY_Y", 1), _key("KEY_Y", 0)]],
+    )
+    assert _run(thread, [device], monkeypatch) == []
+
+
+def test_keyboard_without_the_stop_key_is_reported(monkeypatch):
+    """Die Funktion muss in `_functions()` stehen, sonst meldet nichts die Lücke."""
+    thread = HotkeyThread("KEY_F8", ("KEY_LEFTMETA",), stop_enabled=True)
+    missing: list[list[str]] = []
+    thread.degraded.connect(missing.append)
+    device = _FakeDevice("Tastatur ohne Y", NO_PAUSE)
+    assert _run(thread, [device], monkeypatch) == []
+    assert missing == [["stop"]]
+    (found, served), = thread._keyboards()
+    assert found is device and served == frozenset({"record", "tts"})
+
+
 # --- Gerätefilter: Taste vorhanden, Funktion trotzdem nicht bedient ---
 
-WITH_SCROLLLOCK = FULL + ("KEY_SCROLLLOCK",)
+# Ein Modifier, den FULL NICHT traegt -- nur so laesst sich pruefen, dass ein
+# Geraet ohne ihn die Funktion nicht bedient. KEY_SCROLLLOCK taugt dafuer
+# nicht mehr: es ist seit der Umlegung von F9 der Vorlesen-Ausloeser.
+WITH_EXTRA = FULL + ("KEY_LEFTCTRL",)
 
 
 def test_device_without_the_modifier_does_not_trigger_record_or_tts(monkeypatch):
-    """Gerät B hat F8 und F9, aber nicht KEY_SCROLLLOCK aus der Kombination.
+    """Gerät B hat F8 und F9, aber nicht KEY_LEFTCTRL aus der Kombination.
 
     Der Modifier liegt auf Gerät A und steht damit im gemeinsamen `down` —
     aussortieren kann nur die Prüfung, ob B die Funktion überhaupt bedient.
     """
     thread = HotkeyThread(
         "KEY_F8",
-        ("KEY_LEFTMETA", "KEY_SCROLLLOCK"),
-        tts_modifiers=("KEY_LEFTMETA", "KEY_SCROLLLOCK"),
+        ("KEY_LEFTMETA", "KEY_LEFTCTRL"),
+        tts_modifiers=("KEY_LEFTMETA", "KEY_LEFTCTRL"),
         stt_enabled=True,
     )
     device_a = _FakeDevice(
-        "Tastatur A", WITH_SCROLLLOCK,
-        [[_key("KEY_LEFTMETA", 1), _key("KEY_SCROLLLOCK", 1)]],
+        "Tastatur A", WITH_EXTRA,
+        [[_key("KEY_LEFTMETA", 1), _key("KEY_LEFTCTRL", 1)]],
     )
     device_b = _FakeDevice(
         "Tastatur B", FULL,
-        [[_key("KEY_F8", 1), _key("KEY_F8", 0), _key("KEY_F9", 1), _key("KEY_F9", 0)]],
+        [[_key("KEY_F8", 1), _key("KEY_F8", 0), _key("KEY_SCROLLLOCK", 1), _key("KEY_SCROLLLOCK", 0)]],
     )
     assert _run(thread, [device_a, device_b], monkeypatch) == []
 
 
 def test_device_without_the_modifier_does_not_start_dictation(monkeypatch):
-    """Dasselbe für STT: B hat KEY_PAUSE, aber nicht KEY_SCROLLLOCK."""
+    """Dasselbe für STT: B hat KEY_PAUSE, aber nicht KEY_LEFTCTRL."""
     thread = HotkeyThread(
         "KEY_F8",
         ("KEY_LEFTMETA",),
-        stt_modifiers=("KEY_LEFTMETA", "KEY_SCROLLLOCK"),
+        stt_modifiers=("KEY_LEFTMETA", "KEY_LEFTCTRL"),
         stt_enabled=True,
     )
     device_a = _FakeDevice(
-        "Tastatur A", WITH_SCROLLLOCK,
-        [[_key("KEY_LEFTMETA", 1), _key("KEY_SCROLLLOCK", 1)]],
+        "Tastatur A", WITH_EXTRA,
+        [[_key("KEY_LEFTMETA", 1), _key("KEY_LEFTCTRL", 1)]],
     )
     device_b = _FakeDevice("Tastatur B", FULL, [[_key("KEY_PAUSE", 1)]])
     assert _run(thread, [device_a, device_b], monkeypatch) == []
@@ -356,7 +402,7 @@ def test_vanished_device_releases_dictation_and_leaves_the_selector(monkeypatch)
 
 
 def test_lost_device_reports_the_function_it_took_with_it(monkeypatch):
-    """A trägt als einzige KEY_F9. Fällt A weg, ist "tts" tot — und wird das
+    """A trägt als einzige den Vorlesen-Auslöser. Fällt A weg, ist "tts" tot — und wird das
     zweite Mal gemeldet, obwohl B weiterläuft."""
     thread = _stt_thread()
     missing: list[list[str]] = []

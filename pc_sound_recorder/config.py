@@ -42,7 +42,11 @@ class Config:
     max_minutes: int = 0
     notifications: bool = True
     silence_warn: bool = True
-    tts_trigger_key: str = "KEY_F9"
+    # Rollen statt F9: Meta+F9 ist auf Standard-Plasma KWins "Fenster der
+    # aktuellen Arbeitsflaeche anzeigen" (Expose). PTR liest eine Ebene tiefer
+    # ueber evdev, also feuern beide -- die Uebersicht springt beim Vorlesen auf.
+    # Meta+Rollen ist in KDE unbelegt und schreibt kein Zeichen.
+    tts_trigger_key: str = "KEY_SCROLLLOCK"
     tts_modifiers: tuple[str, ...] = ("KEY_LEFTMETA",)
     tts_clipboard_fallback: bool = False
     stt_enabled: bool = False
@@ -58,6 +62,11 @@ class Config:
     # Steuert, ob der bisherige Inhalt der Zwischenablage vor dem Einfügen
     # gelesen und danach zurückgelegt wird. Siehe stt.paste().
     stt_clipboard_restore: bool = True
+    # Abbruch-Kürzel. Anders als das Diktat braucht es keine Einrichtung und
+    # kann nichts kaputtmachen (es startet nie etwas), deshalb ab Werk an.
+    stop_enabled: bool = True
+    stop_trigger_key: str = "KEY_Y"
+    stop_modifiers: tuple[str, ...] = ("KEY_LEFTMETA",)
 
     def __post_init__(self) -> None:
         if not self.output_dir:
@@ -65,6 +74,7 @@ class Config:
         self.modifiers = tuple(self.modifiers)
         self.tts_modifiers = tuple(self.tts_modifiers)
         self.stt_modifiers = tuple(self.stt_modifiers)
+        self.stop_modifiers = tuple(self.stop_modifiers)
 
     @classmethod
     def load(cls, path: pathlib.Path | None = None) -> "Config":
@@ -100,6 +110,7 @@ KEY_LABELS = {
     # mit dem ersten Buchstaben des Diktats zu ê oder â. Die Pausetaste
     # schreibt nichts, also gibt es nichts wegzuräumen.
     "KEY_PAUSE": "Pause",
+    "KEY_Y": "Y",
 }
 
 MODIFIER_OPTIONS = {
@@ -109,8 +120,12 @@ MODIFIER_OPTIONS = {
 }
 
 
-def shortcut_label(config: Config, tts: bool = False, stt: bool = False) -> str:
-    if stt:
+def shortcut_label(
+    config: Config, tts: bool = False, stt: bool = False, stop: bool = False
+) -> str:
+    if stop:
+        trigger, modifiers = config.stop_trigger_key, config.stop_modifiers
+    elif stt:
         trigger, modifiers = config.stt_trigger_key, config.stt_modifiers
     elif tts:
         trigger, modifiers = config.tts_trigger_key, config.tts_modifiers

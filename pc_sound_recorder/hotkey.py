@@ -17,8 +17,9 @@ class HotkeyThread(QThread):
     read_aloud_pressed = Signal()
     stt_pressed = Signal()
     stt_released = Signal()
+    stop_pressed = Signal()
     unavailable = Signal(str)
-    # Teilausfall: Liste der Funktionsnamen ("record", "tts", "stt"), für die
+    # Teilausfall: Liste der Funktionsnamen ("record", "tts", "stt", "stop"), für die
     # keine Tastatur alle Tasten trägt. Getrennt von `unavailable`, weil der
     # Rest weiterläuft — grau und "nicht verfügbar" wäre schlicht falsch.
     degraded = Signal(list)
@@ -28,12 +29,15 @@ class HotkeyThread(QThread):
         trigger: str,
         modifiers: tuple[str, ...],
         record_enabled: bool = True,
-        tts_trigger: str = "KEY_F9",
+        tts_trigger: str = "KEY_SCROLLLOCK",
         tts_modifiers: tuple[str, ...] = ("KEY_LEFTMETA",),
         read_aloud_enabled: bool = True,
         stt_trigger: str = "KEY_PAUSE",
         stt_modifiers: tuple[str, ...] = ("KEY_LEFTMETA",),
         stt_enabled: bool = False,
+        stop_trigger: str = "KEY_Y",
+        stop_modifiers: tuple[str, ...] = ("KEY_LEFTMETA",),
+        stop_enabled: bool = False,
     ) -> None:
         super().__init__()
         self.trigger = trigger
@@ -45,6 +49,9 @@ class HotkeyThread(QThread):
         self.stt_trigger = stt_trigger
         self.stt_modifiers = tuple(stt_modifiers)
         self.stt_enabled = stt_enabled
+        self.stop_trigger = stop_trigger
+        self.stop_modifiers = tuple(stop_modifiers)
+        self.stop_enabled = stop_enabled
         self._stop_event = threading.Event()
 
     def stop(self) -> None:
@@ -64,6 +71,8 @@ class HotkeyThread(QThread):
             functions["tts"] = (self.tts_trigger, *self.tts_modifiers)
         if self.stt_enabled:
             functions["stt"] = (self.stt_trigger, *self.stt_modifiers)
+        if self.stop_enabled:
+            functions["stop"] = (self.stop_trigger, *self.stop_modifiers)
         return functions
 
     def _keyboards(self) -> list[tuple[evdev.InputDevice, frozenset[str]]]:
@@ -182,6 +191,12 @@ class HotkeyThread(QThread):
                                     # beendet wird.
                                     stt_active = True
                                     self.stt_pressed.emit()
+                                elif (
+                                    "stop" in served
+                                    and name == self.stop_trigger
+                                    and all(held(key) for key in self.stop_modifiers)
+                                ):
+                                    self.stop_pressed.emit()
                             else:
                                 down[id(device)].discard(name)
                                 # Loslassen beendet über beide Wege: Auslöser los

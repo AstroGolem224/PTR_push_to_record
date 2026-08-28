@@ -574,6 +574,23 @@ class DictationThread(QThread):
         # an, und dann bliebe der Diktattext in der Ablage stehen. Ein Lesen
         # eines bool ist unter dem GIL unteilbar und kann nicht verloren gehen.
         self.clipboard_touched = False
+        # Wie `clipboard_touched` ein einfaches Attribut über die Fadengrenze:
+        # gesetzt vom GUI-Faden, gelesen hier. Siehe `cancel()`.
+        self.cancelled = False
+
+    def cancel(self) -> None:
+        """Ergebnis verwerfen: nichts wird mehr eingefügt.
+
+        ponytail: bricht die laufende Erkennung nicht wirklich ab — sie rechnet
+        auf der GPU zu Ende, nur ihr Ergebnis fällt weg. Ein hartes
+        `terminate()` mitten im Lauf ließe den CUDA-Kontext von ctranslate2 in
+        unbekanntem Zustand zurück und damit womöglich jedes weitere Diktat
+        scheitern; beim Programmende (`shutdown()`) ist das egal, mitten im
+        Betrieb nicht. Decke: ein Abbruch gibt das Diktat erst frei, wenn die
+        Erkennung durch ist (1–3 s auf der GPU). Ausbaupfad, falls das stört:
+        die Erkennung in einen eigenen Prozess legen, den man abschießen darf.
+        """
+        self.cancelled = True
 
     def run(self) -> None:
         try:
@@ -596,6 +613,11 @@ class DictationThread(QThread):
             text = recognize(self.path, self.model, self.language, self.device)
             if not text:
                 self.result.emit(False, "Nichts verstanden")
+                return
+            if self.cancelled:
+                # Abgebrochen, während erkannt wurde: der Text darf jetzt nicht
+                # mehr in ein Fenster fallen, in dem der Nutzer längst weiter
+                # tippt. Die WAV räumt das `finally` weg.
                 return
             self.clipboard_touched = True
             self.result.emit(*paste(text, restore=self.clipboard_restore))
