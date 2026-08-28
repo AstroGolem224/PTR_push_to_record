@@ -1,12 +1,22 @@
 # PC-Ton & Vorlesen
 
-Eine kleine KDE/Wayland-Tray-App mit zwei getrennten Funktionen:
+Eine kleine KDE/Wayland-Tray-App mit vier getrennten Funktionen:
 
 - **Meta+F8** startet die Aufnahme des Tons vom aktuellen Standard-Audioausgang.
   Ein zweiter Druck stoppt sie und speichert die Datei (MP3, FLAC, OGG oder WAV).
-- **Meta+F9** liest den gerade markierten Text mit Mimic vor.
+- **Meta+Rollen** liest den gerade markierten Text mit Mimic vor.
+- **Meta+Pause** ist das Diktat: halten, sprechen, loslassen – der erkannte Text
+  wird ins fokussierte Fenster eingefügt. Standardmäßig aus, in den
+  Einstellungen einzuschalten.
+- **Meta+Y** bricht ab, was gerade läuft: ein Vorlesen, ein laufendes Diktat.
+  Intern ist das `KEY_Z`: evdev benennt Tasten nach US-Belegung, und auf einer
+  deutschen Tastatur sitzt dort die Taste mit der Aufschrift Y. Die
+  Einstellungen zeigen die Aufschrift, nicht den evdev-Namen.
+  Es startet nie etwas Neues – anders als ein zweiter Druck auf das Vorlesen-Kürzel, der
+  die Wiedergabe zwar beendet, aber sofort wieder von vorn anfängt. Läuft
+  nichts, passiert nichts.
 
-Beide Hotkeys sind in den Einstellungen frei wählbar (Modifier + Taste).
+Alle vier Hotkeys sind in den Einstellungen frei wählbar (Modifier + Taste).
 
 ## Bedienung
 
@@ -17,7 +27,8 @@ Beide Hotkeys sind in den Einstellungen frei wählbar (Modifier + Taste).
 - Während einer Aufnahme zeigen Tooltip und Menü die laufende Dauer (mm:ss).
 - Die Mimic-Stimme lässt sich in den Einstellungen aus den lokal verfügbaren
   Stimmen auswählen und per **Probehören**-Button testen. Standard ist `forge`.
-- Grün = bereit, Rot = Aufnahme läuft, Blau = Mimic spricht, Grau = deaktiviert.
+- Grün = bereit, Rot = Aufnahme läuft, Blau = Mimic spricht, Orange = Diktat
+  (hört zu oder erkennt), Grau = deaktiviert.
 - Standardziel ist `Musik/PC-Aufnahmen` (über `xdg-user-dir` lokalisiert).
 
 Die App zeichnet den Monitor des beim Start einer Aufnahme aktuellen
@@ -39,7 +50,54 @@ aufgenommen.
 - **Zwischenablage-Fallback**: Wenn kein Text markiert ist, wird zusätzlich
   die Zwischenablage gelesen (`wl-paste`, unter X11 `xclip`). Bewusstes
   Opt-in – die Zwischenablage kann vertrauliche Inhalte (z. B. aus
-  Passwortmanagern) enthalten.
+  Passwortmanagern) enthalten. Zusammen mit dem Diktat überrascht das: Das
+  Diktat legt seinen Text in der Zwischenablage ab, also liest das Vorlesen ohne
+  Markierung genau den zuletzt diktierten Satz vor. Kein Fehler, aber gut zu
+  wissen – wer das nicht will, markiert vorher Text oder lässt den Fallback aus.
+
+## Diktat (Meta+Pause)
+
+Taste halten, sprechen, loslassen. `pw-record` nimmt vom Standard-Mikrofon auf,
+`faster-whisper` erkennt lokal (GPU, sonst CPU), und der Text wird über die
+Zwischenablage mit `ydotool` ins fokussierte Fenster eingefügt – unter Wayland
+gibt es keinen anderen Weg in ein fremdes Fenster.
+
+- **Modell, Sprache und Stilleschwelle** stehen in den Einstellungen. Beim
+  ersten Diktat lädt das gewählte Modell nach (`large-v3-turbo`: rund 1,5 GB);
+  dafür braucht dieser eine Lauf eine Netzverbindung, danach arbeitet das
+  Diktat offline.
+- **Die Zwischenablage wird kurz überschrieben.** Mit dem Häkchen
+  „wiederherstellen" liest PTR den alten Inhalt vorher aus und legt ihn danach
+  zurück. Unabhängig davon schreibt KDE Klipper jede Änderung mit – jedes
+  Diktat steht danach in der Klipper-Historie.
+- **Bekannte Grenze:** zwischen Loslassen und Einfügen liegen rund 1,3 s.
+  Wechselt in dieser Zeit das aktive Fenster, landet der Text dort. Unter
+  Wayland lässt sich das Zielfenster nicht festlegen.
+- Nach dem Diktat bleiben rund 500 MiB VRAM belegt (CUDA-Kontext), bis PTR
+  beendet wird. Das Modellgewicht selbst wird sofort wieder freigegeben.
+
+## Bekannte Stolperstellen
+
+**Meta+F9 und Meta+F10 gehören unter KDE schon KWin.** Deshalb liegt das
+Vorlesen ab Werk auf **Meta+Rollen** und nicht, wie ursprünglich, auf Meta+F9.
+Wer eine F-Taste dafür wählt, trifft in der Standardbelegung auf
+`~/.config/kglobalshortcutsrc`:
+
+```
+Expose    = Ctrl+F9 \t Meta+F9    "Fenster der aktuellen Arbeitsfläche anzeigen"
+ExposeAll = Ctrl+F10 \t Meta+F10  "Fenster aller Arbeitsflächen anzeigen"
+```
+
+Beides feuert dann gleichzeitig: PTR liest die Tasten eine Ebene tiefer über
+evdev, KWin hat seinen Griff zusätzlich. Das ist keine Fehlfunktion von PTR und
+lässt sich in PTR auch nicht reparieren. Zwei Wege heraus:
+
+- In den Systemeinstellungen unter **Kurzbefehle → KWin → „Fenster der
+  aktuellen Arbeitsfläche anzeigen"** das Kürzel ändern oder entfernen.
+- Oder in den Einstellungen von PTR eine andere Kombination fürs Vorlesen
+  wählen.
+
+Dasselbe gilt für jedes andere Kürzel, das der Desktop bereits belegt.
 
 ## Voraussetzungen
 
@@ -49,8 +107,22 @@ aufgenommen.
   optional `xclip` für den X11-Zwischenablage-Fallback
 - eine funktionierende lokale Mimic-Installation (`mimic say`, `mimic voices`)
 - Der Benutzer muss `/dev/input/event*` lesen dürfen (hier: Gruppe `input`)
+- Fürs Diktat zusätzlich: `pw-record` (Paket `pipewire-audio`), `ydotool` samt
+  laufendem `ydotoold`, `wl-copy` und `uv` für die Diktat-Umgebung
 
 ## Installation
+
+**Vorher lesen:** `./install.sh` legt eine eigene Python-Umgebung für das
+Diktat an und lädt dafür **rund 2,7 GB** nach
+`~/.local/share/pc-sound-recorder/venv` (faster-whisper samt CUDA-Bibliotheken;
+eine eigene venv, weil ctranslate2 `libcublas.so.12` braucht). Wer das nicht
+will, überspringt es – alles andere wird trotzdem installiert:
+
+```bash
+PTR_SKIP_STT=1 ./install.sh
+```
+
+Mit Diktat:
 
 ```bash
 chmod +x install.sh
@@ -65,15 +137,20 @@ App-Icon ins hicolor-Theme und aktiviert den Start bei der nächsten
 Anmeldung. Bei einer bestehenden Installation erkennt es die Version und
 meldet „Aktualisiere X → Y".
 
+Die Diktat-Umgebung wird geprüft, nicht nur gezählt: passt die Python-Version
+nicht oder fehlt `faster_whisper` (etwa nach einem Abbruch), baut ein erneutes
+`./install.sh` sie neu.
+
 ## Deinstallation
 
 ```bash
 ./uninstall.sh
 ```
 
-Entfernt App, Starter, Desktop-/Autostart-Einträge und Icon. Einstellungen
-(`~/.config/pc-sound-recorder`) und Aufnahmen bleiben auf Nachfrage erhalten
-(Standard: bleiben).
+Entfernt App, Starter, Desktop-/Autostart-Einträge, Icon und die Diktat-Umgebung.
+Einstellungen (`~/.config/pc-sound-recorder`), Aufnahmen und die geladenen
+Diktat-Modelle (`~/.cache/huggingface/hub`, je Modell 1,5–2,9 GB) bleiben auf
+Nachfrage erhalten (Standard: bleiben).
 
 ## Entwicklung
 

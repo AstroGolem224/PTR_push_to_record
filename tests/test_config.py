@@ -69,10 +69,43 @@ def test_old_config_receives_recording_defaults(tmp_path):
     assert config.max_minutes == 0
     assert config.notifications is True
     assert config.silence_warn is True
-    assert config.tts_trigger_key == "KEY_F9"
+    assert config.tts_trigger_key == "KEY_SCROLLLOCK"
     assert config.tts_modifiers == ("KEY_LEFTMETA",)
     assert config.tts_clipboard_fallback is False
 
 
 def test_shortcut_label_tts():
-    assert shortcut_label(Config(output_dir="/tmp"), tts=True) == "Meta+F9"
+    assert shortcut_label(Config(output_dir="/tmp"), tts=True) == "Meta+Rollen"
+
+
+def test_shortcut_label_stt():
+    assert shortcut_label(Config(output_dir="/tmp"), stt=True) == "Meta+Pause"
+
+
+def test_old_config_receives_stt_defaults(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text('{"output_dir": "/tmp"}', encoding="utf-8")
+    config = Config.load(path)
+    assert config.stt_enabled is False
+    assert config.stt_trigger_key == "KEY_PAUSE"
+    assert config.stt_modifiers == ("KEY_LEFTMETA",)
+    assert config.stt_model == "large-v3-turbo"
+    assert config.stt_language == "de"
+    assert config.stt_device == "cuda"
+    assert config.stt_threshold == 0.015
+    assert config.stt_min_seconds == 0.3
+    assert config.stt_clipboard_restore is True
+
+
+def test_config_round_trip_with_stt_fields(tmp_path):
+    path = tmp_path / "config.json"
+    original = Config(
+        output_dir=str(tmp_path / "audio"),
+        stt_enabled=True,
+        stt_modifiers=("KEY_LEFTCTRL", "KEY_LEFTALT"),
+        stt_language="",
+        stt_threshold=0.03,
+        stt_clipboard_restore=False,
+    )
+    original.save(path)
+    assert Config.load(path) == original

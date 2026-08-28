@@ -42,15 +42,45 @@ class Config:
     max_minutes: int = 0
     notifications: bool = True
     silence_warn: bool = True
-    tts_trigger_key: str = "KEY_F9"
+    # Rollen statt F9: Meta+F9 ist auf Standard-Plasma KWins "Fenster der
+    # aktuellen Arbeitsflaeche anzeigen" (Expose). PTR liest eine Ebene tiefer
+    # ueber evdev, also feuern beide -- die Uebersicht springt beim Vorlesen auf.
+    # Meta+Rollen ist in KDE unbelegt und schreibt kein Zeichen.
+    tts_trigger_key: str = "KEY_SCROLLLOCK"
     tts_modifiers: tuple[str, ...] = ("KEY_LEFTMETA",)
     tts_clipboard_fallback: bool = False
+    stt_enabled: bool = False
+    stt_trigger_key: str = "KEY_PAUSE"
+    stt_modifiers: tuple[str, ...] = ("KEY_LEFTMETA",)
+    stt_model: str = "large-v3-turbo"
+    stt_language: str = "de"
+    stt_device: str = "cuda"
+    stt_threshold: float = 0.015
+    # Kürzere Drücke sind Verklicker, kein Diktat. Ohne diese Sperre erfindet
+    # Whisper aus dem Bruchteil einer Sekunde einen Satz.
+    stt_min_seconds: float = 0.3
+    # Steuert, ob der bisherige Inhalt der Zwischenablage vor dem Einfügen
+    # gelesen und danach zurückgelegt wird. Siehe stt.paste().
+    stt_clipboard_restore: bool = True
+    # Abbruch-Kürzel. Anders als das Diktat braucht es keine Einrichtung und
+    # kann nichts kaputtmachen (es startet nie etwas), deshalb ab Werk an.
+    stop_enabled: bool = True
+    # KEY_Z, nicht KEY_Y: evdev benennt Tasten nach US-Belegung, und auf einer
+    # deutschen Tastatur sitzt an der KEY_Z-Position die Taste mit der Aufschrift
+    # Y. Gemessen am 2026-08-28: Meta + Taste "Y" liefert Code 44 (KEY_Z).
+    # Dieselbe Vertauschung, an der in stt.py schon `ydotool type` gescheitert
+    # ist ("zeigt" -> "yeigt"). Kein Test faengt das: die Attrappen pruefen
+    # gegen den Namen, nicht gegen die Taste unter dem Finger.
+    stop_trigger_key: str = "KEY_Z"
+    stop_modifiers: tuple[str, ...] = ("KEY_LEFTMETA",)
 
     def __post_init__(self) -> None:
         if not self.output_dir:
             self.output_dir = str(default_output_dir())
         self.modifiers = tuple(self.modifiers)
         self.tts_modifiers = tuple(self.tts_modifiers)
+        self.stt_modifiers = tuple(self.stt_modifiers)
+        self.stop_modifiers = tuple(self.stop_modifiers)
 
     @classmethod
     def load(cls, path: pathlib.Path | None = None) -> "Config":
@@ -81,6 +111,15 @@ KEY_LABELS = {
     "KEY_F11": "F11",
     "KEY_F12": "F12",
     "KEY_SCROLLLOCK": "Rollen",
+    # KEY_PAUSE und nicht etwa KEY_GRAVE: das ^ links der Eins erzeugt ein
+    # Zeichen, und zwar ein totes — es blieb schwebend stehen und verband sich
+    # mit dem ersten Buchstaben des Diktats zu ê oder â. Die Pausetaste
+    # schreibt nichts, also gibt es nichts wegzuräumen.
+    "KEY_PAUSE": "Pause",
+    # Beschriftet nach deutscher Aufschrift, nicht nach evdev-Name -- sonst
+    # waehlt der Nutzer "Y" und bekommt die Taste daneben.
+    "KEY_Z": "Y",
+    "KEY_Y": "Z",
 }
 
 MODIFIER_OPTIONS = {
@@ -90,9 +129,17 @@ MODIFIER_OPTIONS = {
 }
 
 
-def shortcut_label(config: Config, tts: bool = False) -> str:
-    trigger = config.tts_trigger_key if tts else config.trigger_key
-    modifiers = config.tts_modifiers if tts else config.modifiers
+def shortcut_label(
+    config: Config, tts: bool = False, stt: bool = False, stop: bool = False
+) -> str:
+    if stop:
+        trigger, modifiers = config.stop_trigger_key, config.stop_modifiers
+    elif stt:
+        trigger, modifiers = config.stt_trigger_key, config.stt_modifiers
+    elif tts:
+        trigger, modifiers = config.tts_trigger_key, config.tts_modifiers
+    else:
+        trigger, modifiers = config.trigger_key, config.modifiers
     modifier = next(
         (label for label, keys in MODIFIER_OPTIONS.items() if tuple(keys) == tuple(modifiers)),
         "+".join(key.removeprefix("KEY_").title() for key in modifiers),
