@@ -12,21 +12,32 @@ Der einzige Weg führt eine Ebene tiefer: `ydotool` legt über `/dev/uinput`
 eine virtuelle Tastatur an, und die sieht der Compositor wie echte Hardware.
 xdotool erreicht nur XWayland-Fenster.
 
-## Warum das Modell je Diktat neu lädt (kalter Betrieb)
+## Warum das Modell warm bleibt und nach Leerlauf freigibt
 
-Ein warmer Dienst wäre nach dem ersten Diktat schneller, belegt dafür dauerhaft
-1,6–2,6 GB VRAM neben Mimic und ComfyUI. Bewusst entschieden am 2026-08-28:
-kalt. Gemessen kostet der kalte Pfad rund 1,3 s bis zum Text.
-# ponytail: Modell lädt je Diktat. Wird ein warm gehaltener Faden, wenn die
-# Sekunde stört — dann `load_model()` einmal aufrufen und das Ergebnis halten.
+Bis 2026-08-28 lud jedes Diktat das Modell neu (kalter Betrieb). Das kostete
+gemessen 1,62 s Laden gegen 0,13 s Erkennen — die Wartezeit war fast
+ausschließlich Ladezeit. Seit 2026-08-29 bleibt das Modell geladen und gibt das
+VRAM erst nach `stt_warm_minutes` ohne Diktat wieder frei (Vorgabe 10, `0` =
+nie). Warm steht der Text nach 0,13 s.
 
-**Kalt heißt nicht spurlos.** Das Modellgewicht ist nach dem Diktat wieder frei,
-der CUDA-Kontext samt cuBLAS-/cuDNN-Griffen nicht: ctranslate2 hält ihn bis zum
-Prozessende. Gemessen am 2026-08-28 über fünf kalte Läufe an der eigenen PID:
-vorher 0 MiB, danach konstant 500 MiB — kein wachsendes Leck, aber dauerhaft.
-Wer die 500 MiB wirklich zurückhaben will, braucht die Erkennung in einem
-Kindprozess statt in einem Faden; das ist eine Architekturentscheidung und
-steht hier bewusst aus.
+Die Freigabe ist kein Selbstzweck: neben einem 27B-Modell (~22 GB) und Mimic
+(5,7 GB warm) ist eine 32-GB-Karte knapp. Das Diktat soll instant sein, solange
+diktiert wird, und die Karte hergeben, sobald wieder programmiert wird.
+
+**Besitz und Freigabe.** Das Modell liegt in einem Modulcache (`_cache`), nicht
+im `DictationThread` — der entsteht je Diktat neu. Wer den Cache anfasst, hält
+`_cache_lock`. Die Erkennung hält ihn über ihre ganze Laufzeit; `release_model()`
+läuft im GUI-Faden und versucht den Riegel deshalb **ohne zu warten**: läuft
+gerade eine Erkennung, passiert nichts, der GUI-Faden friert nicht ein und das
+Diktat behält sein Ergebnis. Die Frist startet nach jedem Diktat neu, die
+übersprungene Freigabe holt der nächste Ablauf nach.
+
+**Freigeben heißt nicht spurlos.** Das Modellgewicht ist weg, der CUDA-Kontext
+samt cuBLAS-/cuDNN-Griffen nicht: ctranslate2 hält ihn bis zum Prozessende.
+Gemessen am 2026-08-28 über fünf kalte Läufe an der eigenen PID: vorher 0 MiB,
+danach konstant 500 MiB — kein wachsendes Leck, aber dauerhaft. Wer die 500 MiB
+wirklich zurückhaben will, braucht die Erkennung in einem Kindprozess statt in
+einem Faden; das ist eine Architekturentscheidung und steht hier bewusst aus.
 
 ## Bekannte Grenze: der Fokus kann wechseln
 
@@ -59,6 +70,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import wave
 from typing import NamedTuple
@@ -183,14 +195,49 @@ class Recording:
         self.path.unlink(missing_ok=True)
 
 
-def load_model(model: str = "large-v3-turbo", device: str = "cuda"):
+def _build_model(WhisperModel, model: str, **kwargs):
+    """Baut das Modell **erst aus dem Cache**, und lädt nur nach, wenn es fehlt.
+
+    `WhisperModel("large-v3-turbo")` bekommt einen Namen, keinen Pfad. Ohne
+    `local_files_only` fragt huggingface_hub dann bei jedem Laden per ETag beim
+    Hub nach, ob die Revision noch stimmt — auch wenn alles im Cache liegt.
+    Gemessen 2026-08-28 bei gutem Netz: 1,60 s gegen 0,97 s offline. Hängt die
+    Verbindung, wartet es stattdessen auf einen Timeout; so entstand ein Diktat,
+    das 17 s brauchte, wo dieselbe Arbeit sonst 1,75 s kostet.
+
+    Ein hart gesetztes `HF_HUB_OFFLINE=1` wäre der kürzere Weg, macht aber das
+    allererste Diktat auf einer frischen Installation unmöglich — das Modell
+    muss einmal geladen werden (rund 1,5 GB). Also offline zuerst und genau
+    dann online, wenn im Cache nichts liegt. Danach ist der Cache warm und der
+    Online-Weg wird nie wieder genommen. Kein `install.sh`-Vorladen, weil erst
+    die Einstellung entscheidet, welches der vier Modelle gebraucht wird.
+
+    Erkannt wird der Cache-Fehlschlag am Klassennamen, wie in `_fehlertext()`:
+    huggingface_hub wird hier nicht importiert, es liegt in der venv.
+    """
+    try:
+        return WhisperModel(model, local_files_only=True, **kwargs)
+    except Exception as error:
+        if "LocalEntryNotFound" not in type(error).__name__:
+            raise
+    print(f"Diktat-Modell {model} nicht im Cache – einmaliger Download", file=sys.stderr)
+    return WhisperModel(model, **kwargs)
+
+
+def load_model(
+    model: str = "large-v3-turbo",
+    device: str = "cuda",
+    compute_type: str = "int8_float16",
+):
     """Lädt das Erkennungsmodell. GPU, wenn sie erreichbar ist, sonst CPU.
 
-    `float16` und nicht `int8_float16`: warm sind alle Quantisierungen gleich
-    schnell (0,101/0,110/0,104 s, gemessen 2026-08-28), aber PTR fährt kalt —
-    und da gewinnt `float16` deutlich (1,257 s gegen 1,727 s Gesamtzeit), weil
-    Quantisierung beim Modellaufbau kostet und der bei jedem Diktat anfällt.
-    Der Preis ist rund 1 GB mehr VRAM, aber nur für die Dauer des Diktats.
+    `int8_float16` als Vorgabe und nicht mehr `float16`: warm sind alle
+    Quantisierungen gleich schnell (0,101/0,110/0,104 s über 20 s Ton, gemessen
+    2026-08-28), aber `int8_float16` belegt 1,6 GB statt 2,6 GB VRAM. Im kalten
+    Betrieb gewann `float16` (1,257 s gegen 1,727 s), weil das Quantisieren beim
+    Modellaufbau kostet und der damals bei jedem Diktat anfiel — seit PTR das
+    Modell warm hält, fällt er genau einmal an. Damit zählt nur noch das VRAM,
+    und da ist das eingesparte Gigabyte den einmaligen Aufschlag wert.
 
     Der Rückfall auf CPU ist kein Zierrat: ohne LD_LIBRARY_PATH auf die
     Nvidia-lib-Ordner findet ctranslate2 libcublas nicht, und dann soll das
@@ -199,10 +246,49 @@ def load_model(model: str = "large-v3-turbo", device: str = "cuda"):
     WhisperModel = _whisper_model()
     if device == "cuda":
         try:
-            return WhisperModel(model, device="cuda", compute_type="float16")
+            return _build_model(WhisperModel, model, device="cuda", compute_type=compute_type)
         except Exception as error:      # ct2 wirft RuntimeError, aber nicht nur
             print(f"GPU nicht nutzbar ({error}) – CPU", file=sys.stderr)
-    return WhisperModel(model, device="cpu", compute_type="int8", cpu_threads=THREADS)
+    return _build_model(
+        WhisperModel, model, device="cpu", compute_type="int8", cpu_threads=THREADS
+    )
+
+
+# Das warm gehaltene Modell. Schlüssel ist, wonach gefragt wurde (Modell, Gerät,
+# Quantisierung) — ändert der Nutzer eine Einstellung, fällt der alte Eintrag
+# weg statt still weiterbenutzt zu werden.
+_cache_lock = threading.Lock()
+_cache: tuple[tuple[str, str, str], object] | None = None
+
+
+def _cached_model(model: str, device: str, compute_type: str):
+    """Modell aus dem Cache oder frisch geladen. **Nur mit `_cache_lock`.**"""
+    global _cache
+    key = (model, device, compute_type)
+    if _cache is not None and _cache[0] == key:
+        return _cache[1]
+    _cache = None                       # altes Gewicht erst freigeben, dann laden
+    whisper = load_model(model, device, compute_type)
+    _cache = (key, whisper)
+    return whisper
+
+
+def release_model() -> bool:
+    """Gibt das warm gehaltene Modell frei. True, wenn es wirklich weg ist.
+
+    Läuft im GUI-Faden, wenn die Leerlauffrist abläuft, und **wartet nicht**:
+    hielte hier eine laufende Erkennung den Riegel, fröre die Tray-App für die
+    Dauer der Erkennung ein. Ein `False` ist kein Fehler — die Frist startet
+    nach jedem Diktat neu, der nächste Ablauf räumt nach.
+    """
+    global _cache
+    if not _cache_lock.acquire(blocking=False):
+        return False
+    try:
+        released, _cache = _cache is not None, None
+    finally:
+        _cache_lock.release()
+    return released
 
 
 def _whisper_model():
@@ -313,8 +399,14 @@ def recognize(
     model: str = "large-v3-turbo",
     language: str = "de",
     device: str = "cuda",
+    compute_type: str = "int8_float16",
+    zeiten: dict[str, float] | None = None,
 ) -> str:
-    """Modell laden, erkennen, wieder freigeben — der ganze kalte Weg.
+    """Modell holen (warm oder frisch) und erkennen.
+
+    Hält `_cache_lock` über die ganze Erkennung: solange gerechnet wird, darf
+    `release_model()` das Gewicht nicht unter dem Faden wegziehen. Die Sperre
+    kostet nichts, weil PTR ohnehin nur ein Diktat gleichzeitig zulässt.
 
     Der CPU-Rückfall steckt hier und nicht nur in `load_model()`, weil
     ctranslate2 das Modell verzögert baut: ohne `LD_LIBRARY_PATH` auf die
@@ -322,16 +414,35 @@ def recognize(
     erste `encode()` wirft `RuntimeError: Library libcublas.so.12 is not found`.
     Gemessen 2026-08-28. Säße der Rückfall nur am Laden, wäre er genau in dem
     Fall wirkungslos, für den er gebaut wurde.
+
+    `zeiten` nimmt, wenn gegeben, die Sekunden für „laden" und „erkennen" auf —
+    getrennt, weil genau diese Trennung die Ursache eines langsamen Diktats
+    zeigt (siehe `DictationThread.run`).
     """
-    whisper = load_model(model, device)
-    try:
-        return transcribe(whisper, path, language)
-    except RuntimeError as error:
-        if device != "cuda":
-            raise
-        print(f"GPU nicht nutzbar ({error}) – CPU", file=sys.stderr)
-    del whisper
-    return transcribe(load_model(model, "cpu"), path, language)
+    with _cache_lock:
+        begonnen = time.monotonic()
+        whisper = _cached_model(model, device, compute_type)
+        if zeiten is not None:
+            zeiten["laden"] = time.monotonic() - begonnen
+        begonnen = time.monotonic()
+        try:
+            return transcribe(whisper, path, language)
+        except RuntimeError as error:
+            if device != "cuda":
+                raise
+            print(f"GPU nicht nutzbar ({error}) – CPU", file=sys.stderr)
+        finally:
+            if zeiten is not None:
+                zeiten["erkennen"] = time.monotonic() - begonnen
+        del whisper
+        begonnen = time.monotonic()
+        try:
+            return transcribe(
+                _cached_model(model, "cpu", compute_type), path, language
+            )
+        finally:
+            if zeiten is not None:
+                zeiten["erkennen"] += time.monotonic() - begonnen
 
 
 # --- Zwischenablage ---------------------------------------------------------
@@ -559,12 +670,14 @@ class DictationThread(QThread):
         device: str = "cuda",
         threshold: float = 0.015,
         clipboard_restore: bool = True,
+        compute_type: str = "int8_float16",
     ) -> None:
         super().__init__()
         self.path = path
         self.model = model
         self.language = language
         self.device = device
+        self.compute_type = compute_type
         self.threshold = threshold
         self.clipboard_restore = clipboard_restore
         # Wird kurz vor dem ersten `wl-copy` gesetzt und vom GUI-Faden gelesen.
@@ -593,11 +706,19 @@ class DictationThread(QThread):
         self.cancelled = True
 
     def run(self) -> None:
+        # Eine Zeile je Diktat auf die Fehlerausgabe, damit beim nächsten
+        # langsamen Diktat schwarz auf weiß dasteht, welcher Abschnitt gedauert
+        # hat. Genau diese Trennung war die Frage: 17 s gewartet, und ohne
+        # Messung war nicht zu sehen, dass davon fast alles im Laden lag.
+        zeiten: dict[str, float] = {}
+        gestartet = time.monotonic()
         try:
             if not self.path.is_file() or self.path.stat().st_size < MIN_BYTES:
                 self.result.emit(False, "Zu kurz – nichts erkannt")
                 return
+            begonnen = time.monotonic()
             quiet, level = too_quiet(self.path, self.threshold)
+            zeiten["pegel"] = time.monotonic() - begonnen
             if quiet:
                 self.result.emit(
                     False,
@@ -605,12 +726,13 @@ class DictationThread(QThread):
                     f"Schwelle {self.threshold})",
                 )
                 return
-            # `recognize` hält das Modell nur lokal: mit seiner Rückkehr gibt
-            # ctranslate2 das Modellgewicht wieder frei. Das ist der kalte
-            # Betrieb — nicht spurlos: rund 500 MiB CUDA-Kontext und
-            # cuBLAS-/cuDNN-Griffe bleiben bis zum Prozessende belegt
-            # (gemessen, siehe Modul-Docstring).
-            text = recognize(self.path, self.model, self.language, self.device)
+            # `recognize` legt das Modell in den Modulcache und hält es dort
+            # warm; freigegeben wird es von `release_model()`, wenn die
+            # Leerlauffrist abläuft (siehe Modul-Docstring).
+            text = recognize(
+                self.path, self.model, self.language, self.device,
+                self.compute_type, zeiten,
+            )
             if not text:
                 self.result.emit(False, "Nichts verstanden")
                 return
@@ -620,10 +742,18 @@ class DictationThread(QThread):
                 # tippt. Die WAV räumt das `finally` weg.
                 return
             self.clipboard_touched = True
-            self.result.emit(*paste(text, restore=self.clipboard_restore))
+            begonnen = time.monotonic()
+            erfolg, meldung = paste(text, restore=self.clipboard_restore)
+            zeiten["einfügen"] = time.monotonic() - begonnen
+            self.result.emit(erfolg, meldung)
         except SttError as error:
             self.result.emit(False, str(error))
         except Exception as error:      # noqa: BLE001 – siehe _fehlertext()
             self.result.emit(False, _fehlertext(error))
         finally:
             self.path.unlink(missing_ok=True)
+            abschnitte = " ".join(f"{name} {wert:.2f}s" for name, wert in zeiten.items())
+            print(
+                f"Diktat: {abschnitte} gesamt {time.monotonic() - gestartet:.2f}s",
+                file=sys.stderr,
+            )

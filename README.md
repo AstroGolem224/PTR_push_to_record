@@ -70,11 +70,24 @@ gibt es keinen anderen Weg in ein fremdes Fenster.
   „wiederherstellen" liest PTR den alten Inhalt vorher aus und legt ihn danach
   zurück. Unabhängig davon schreibt KDE Klipper jede Änderung mit – jedes
   Diktat steht danach in der Klipper-Historie.
-- **Bekannte Grenze:** zwischen Loslassen und Einfügen liegen rund 1,3 s.
-  Wechselt in dieser Zeit das aktive Fenster, landet der Text dort. Unter
-  Wayland lässt sich das Zielfenster nicht festlegen.
-- Nach dem Diktat bleiben rund 500 MiB VRAM belegt (CUDA-Kontext), bis PTR
-  beendet wird. Das Modellgewicht selbst wird sofort wieder freigegeben.
+- **Das Modell bleibt warm.** Nach dem ersten Diktat steht der Text in rund
+  0,1 s statt in 2,3 s – gemessen an 20 s Ton. Der Preis sind **1,6 GB VRAM**,
+  solange das Modell geladen ist. Nach `stt_warm_minutes` ohne Diktat (Vorgabe
+  10, `0` = nie) gibt PTR sie wieder frei; wer nebenher ein großes Sprachmodell
+  auf dieselbe Karte lädt, stellt die Zahl kleiner.
+- **Bekannte Grenze:** zwischen Loslassen und Einfügen liegt beim ersten Diktat
+  rund 1,3 s, danach ein Bruchteil davon. Wechselt in dieser Zeit das aktive
+  Fenster, landet der Text dort. Unter Wayland lässt sich das Zielfenster nicht
+  festlegen.
+- Auch nach der Freigabe bleiben rund **500 MiB VRAM** belegt (CUDA-Kontext),
+  bis PTR beendet wird. Das Modellgewicht (1,6 GB) ist dann weg.
+- **Ohne Netz nach dem ersten Lauf.** PTR lädt das Modell mit
+  `local_files_only` aus dem lokalen Cache und fragt nicht beim HuggingFace-Hub
+  nach. Das ist keine Kosmetik: hängt die Verbindung, wartet der Abgleich auf
+  seinen Timeout – gemessen 135,8 s gegen 1,2 s aus dem Cache. Fehlt das Modell
+  im Cache, lädt PTR es genau einmal nach.
+- `stt_warm_minutes` und `stt_compute_type` (Vorgabe `int8_float16`) stehen nur
+  in `~/.config/pc-sound-recorder/config.json`, nicht im Einstellungsdialog.
 
 ## Bekannte Stolperstellen
 

@@ -23,7 +23,9 @@ from .config import (
     APP_ID, KEY_LABELS, MODIFIER_OPTIONS, Config, shortcut_label,
 )
 from .hotkey import HotkeyThread
-from .stt import DictationThread, Recording, restore_clipboard, snapshot_clipboard
+from .stt import (
+    DictationThread, Recording, release_model, restore_clipboard, snapshot_clipboard,
+)
 from .tts import SpeechThread, VoicesThread, find_mimic
 
 
@@ -437,6 +439,13 @@ class TrayApplication:
         self.duration_timer = QTimer()
         self.duration_timer.setInterval(1000)
         self.duration_timer.timeout.connect(self._tick)
+        # Leerlauffrist fürs Diktatmodell. Läuft im GUI-Faden, gibt aber nur
+        # den Modulcache in stt.py frei — das Modell gehört nicht dem
+        # DictationThread, der je Diktat neu entsteht. `release_model()` wartet
+        # nicht auf eine laufende Erkennung, siehe dort.
+        self._stt_release_timer = QTimer()
+        self._stt_release_timer.setSingleShot(True)
+        self._stt_release_timer.timeout.connect(release_model)
         self.tray = QSystemTrayIcon()
         self.menu = QMenu()
         self.enabled_action = QAction("Aufnahme-Hotkey aktiv", self.menu)
@@ -758,9 +767,19 @@ class TrayApplication:
 
     # --- Diktat -----------------------------------------------------------
 
+    def _arm_stt_release(self) -> None:
+        """Leerlauffrist neu starten. `stt_warm_minutes == 0` heißt: nie freigeben."""
+        self._stt_release_timer.stop()
+        if self.config.stt_warm_minutes > 0:
+            self._stt_release_timer.start(int(self.config.stt_warm_minutes * 60_000))
+
     def start_dictation(self) -> None:
         if not self.config.stt_enabled or self.dictation.is_recording:
             return
+        # Solange diktiert wird, läuft keine Frist: sonst könnte sie zwischen
+        # Aufnahme und Erkennung ablaufen und das gerade gebrauchte Modell
+        # wegräumen — das nächste Diktat lüde es dann neu.
+        self._stt_release_timer.stop()
         if self.stt is not None and self.stt.isRunning():
             # Das vorige Diktat wird noch erkannt. Ein zweites danebenlegen
             # hieße zwei Modelle gleichzeitig im VRAM und zwei Texte, die um
@@ -822,6 +841,7 @@ class TrayApplication:
             device=self.config.stt_device,
             threshold=self.config.stt_threshold,
             clipboard_restore=self.config.stt_clipboard_restore,
+            compute_type=self.config.stt_compute_type,
         )
         self.stt = worker
         worker.result.connect(lambda ok, message: self._dictation_result(worker, ok, message))
@@ -855,6 +875,10 @@ class TrayApplication:
             return
         self.stt = None
         self._stt_clipboard = None
+        # Ab hier zählt der Leerlauf: das Modell bleibt geladen, bis die Frist
+        # abläuft. Auch nach einem abgebrochenen oder leeren Diktat — geladen
+        # ist es dann trotzdem.
+        self._arm_stt_release()
         self._refresh(self._last_stt_status)
 
     def start_recording(self) -> None:
@@ -1041,6 +1065,7 @@ class TrayApplication:
 
     def shutdown(self) -> None:
         self.duration_timer.stop()
+        self._stt_release_timer.stop()
         if self.hotkey:
             self.hotkey.stop()
             if not self.hotkey.wait(1500):
@@ -1081,6 +1106,10 @@ class TrayApplication:
                     restore_clipboard(saved[1], primary=True)
             self.stt = None
         self._stt_clipboard = None
+        # Das warm gehaltene Modell gehört dem Modul, nicht dem Faden: ohne
+        # diese Zeile bliebe es bis zum Prozessende im VRAM. Nach dem
+        # terminate() oben läuft keine Erkennung mehr, der Riegel ist frei.
+        release_model()
         self.stop_speaking()
         if self.speech is not None and self.speech.isRunning():
             # Letzte Rettung beim Beenden: kein „QThread destroyed while running".

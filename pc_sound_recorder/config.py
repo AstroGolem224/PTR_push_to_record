@@ -55,6 +55,22 @@ class Config:
     stt_model: str = "large-v3-turbo"
     stt_language: str = "de"
     stt_device: str = "cuda"
+    # `int8_float16` statt `float16`: warm sind alle Quantisierungen gleich
+    # schnell (0,101/0,110/0,104 s über 20 s Ton, gemessen 2026-08-28), aber
+    # `int8_float16` belegt 1,6 GB statt 2,6 GB VRAM. Kalt gewann `float16`,
+    # weil das Quantisieren beim Modellaufbau kostet — warm fällt das genau
+    # einmal an. Siehe stt.load_model().
+    stt_compute_type: str = "int8_float16"
+    # Minuten ohne Diktat, nach denen das Modell das VRAM wieder freigibt.
+    # 0 = nie freigeben. Warm kostet das Erkennen 0,13 s statt 1,75 s; der
+    # Preis sind 1,6 GB VRAM, die neben einem großen LLM fehlen. Zehn Minuten
+    # halten eine Diktatsitzung zusammen und geben die Karte frei, sobald
+    # wieder programmiert wird.
+    # ponytail: beide nur in der Datei, nicht im Einstellungsdialog. Wer die
+    # Karte für ein LLM braucht, ändert eine Zahl in config.json; wer nicht,
+    # merkt nichts. Nachrüsten, wenn jemand zwischen den Werten hin und her
+    # stellen muss, ohne PTR neu zu starten.
+    stt_warm_minutes: int = 10
     stt_threshold: float = 0.015
     # Kürzere Drücke sind Verklicker, kein Diktat. Ohne diese Sperre erfindet
     # Whisper aus dem Bruchteil einer Sekunde einen Satz.

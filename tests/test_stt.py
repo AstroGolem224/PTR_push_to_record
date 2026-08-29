@@ -348,7 +348,10 @@ def test_cancelled_thread_does_not_paste(qapp, tmp_path, monkeypatch):
 def test_recognize_falls_back_to_cpu_when_cuda_fails_late(monkeypatch, tmp_path):
     """ctranslate2 baut verzögert: die fehlende libcublas fliegt erst hier auf."""
     devices = []
-    monkeypatch.setattr(stt, "load_model", lambda model, device: devices.append(device))
+    monkeypatch.setattr(
+        stt, "load_model",
+        lambda model, device, compute_type: devices.append(device),
+    )
 
     def transcribe(model, path, language):
         if devices[-1] == "cuda":
@@ -369,7 +372,7 @@ def test_recognize_does_not_loop_on_cpu(monkeypatch, tmp_path):
     """
     calls = []
     monkeypatch.setattr(
-        stt, "load_model", lambda model, device: calls.append(device)
+        stt, "load_model", lambda model, device, compute_type: calls.append(device)
     )
 
     def transcribe(model, path, language):
@@ -379,6 +382,120 @@ def test_recognize_does_not_loop_on_cpu(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError):
         stt.recognize(tmp_path / "x.wav", device="cpu")
     assert calls == ["cpu"]
+
+
+# --- Warm halten und freigeben ----------------------------------------------
+
+
+def test_second_recognition_reuses_the_warm_model(monkeypatch, tmp_path):
+    """Warm heißt warm: das zweite Diktat lädt nicht noch einmal."""
+    ladungen = []
+    monkeypatch.setattr(
+        stt, "load_model",
+        lambda model, device, compute_type: (ladungen.append(device), object())[1],
+    )
+    monkeypatch.setattr(stt, "transcribe", lambda model, wav, language: "Hallo")
+    assert stt.recognize(tmp_path / "x.wav") == "Hallo"
+    assert stt.recognize(tmp_path / "x.wav") == "Hallo"
+    assert ladungen == ["cuda"]
+    assert stt.release_model() is True
+    # Und nach der Freigabe wieder von vorn.
+    assert stt.recognize(tmp_path / "x.wav") == "Hallo"
+    assert ladungen == ["cuda", "cuda"]
+
+
+def test_changed_settings_do_not_reuse_the_old_model(monkeypatch, tmp_path):
+    geladen = []
+    monkeypatch.setattr(
+        stt, "load_model",
+        lambda model, device, compute_type: (
+            geladen.append((model, device, compute_type)), object()
+        )[1],
+    )
+    monkeypatch.setattr(stt, "transcribe", lambda model, wav, language: "Hallo")
+    stt.recognize(tmp_path / "x.wav")
+    stt.recognize(tmp_path / "x.wav", compute_type="float16")
+    assert geladen == [
+        ("large-v3-turbo", "cuda", "int8_float16"),
+        ("large-v3-turbo", "cuda", "float16"),
+    ]
+
+
+def test_release_during_recognition_does_not_break_the_dictation(qapp, tmp_path, monkeypatch):
+    """Die Frist läuft mitten in der Erkennung ab — das darf nichts kosten.
+
+    Freigeben, während ctranslate2 auf dem Modell rechnet, wäre ein Absturz.
+    `release_model()` versucht den Riegel deshalb ohne zu warten und tut hier
+    nichts; das Diktat behält sein Ergebnis, und der GUI-Faden (dieser Test)
+    hängt nicht an der Erkennung fest.
+    """
+    path = _wav(tmp_path / "laut.wav", seconds=2.0, amplitude=8000)
+    monkeypatch.setattr(stt, "load_model", lambda *args, **kwargs: object())
+    freigaben = []
+
+    def transcribe(model, wav, language):
+        # Aus dem Erkennungsfaden heraus aufgerufen: der Riegel ist belegt.
+        freigaben.append(stt.release_model())
+        return "Hallo Welt"
+
+    monkeypatch.setattr(stt, "transcribe", transcribe)
+    monkeypatch.setattr(
+        stt, "paste", lambda text, restore=True: (True, f"eingefügt: {text}")
+    )
+    results = _run_thread(qapp, stt.DictationThread(path))
+    assert results == [(True, "eingefügt: Hallo Welt")]
+    assert freigaben == [False]         # abgelehnt, nicht abgestürzt
+    # Danach ist der Riegel frei und die Freigabe greift.
+    assert stt.release_model() is True
+
+
+def test_release_without_a_model_reports_nothing_to_free(monkeypatch):
+    assert stt.release_model() is False
+
+
+def test_model_is_built_from_the_cache_first(monkeypatch):
+    """Ohne `local_files_only` fragt huggingface_hub bei jedem Laden online nach."""
+    aufrufe = []
+
+    class FakeWhisper:
+        def __init__(self, model, **kwargs):
+            aufrufe.append(kwargs.get("local_files_only", False))
+
+    assert isinstance(stt._build_model(FakeWhisper, "large-v3-turbo"), FakeWhisper)
+    assert aufrufe == [True]
+
+
+def test_missing_cache_falls_back_to_one_download(monkeypatch):
+    """Erstes Diktat auf frischer Installation: einmal online, danach nie wieder."""
+
+    class LocalEntryNotFoundError(OSError):
+        pass
+
+    aufrufe = []
+
+    class FakeWhisper:
+        def __init__(self, model, **kwargs):
+            offline = kwargs.get("local_files_only", False)
+            aufrufe.append(offline)
+            if offline:
+                raise LocalEntryNotFoundError("nichts im Cache")
+
+    assert isinstance(stt._build_model(FakeWhisper, "large-v3-turbo"), FakeWhisper)
+    assert aufrufe == [True, False]
+
+
+def test_other_load_errors_do_not_trigger_a_download(monkeypatch):
+    """Eine kaputte GPU ist kein Grund, auf ein Netz-Timeout zu warten."""
+    aufrufe = []
+
+    class FakeWhisper:
+        def __init__(self, model, **kwargs):
+            aufrufe.append(kwargs.get("local_files_only", False))
+            raise RuntimeError("libcublas.so.12 is not found")
+
+    with pytest.raises(RuntimeError):
+        stt._build_model(FakeWhisper, "large-v3-turbo")
+    assert aufrufe == [True]
 
 
 def test_thread_reports_a_missing_environment(qapp, tmp_path, monkeypatch):

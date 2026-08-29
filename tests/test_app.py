@@ -78,6 +78,21 @@ class FakeAction:
         self.text = text
 
 
+class FakeTimer:
+    """Steht für den QTimer der Diktat-Leerlauffrist. Merkt sich, was er täte."""
+
+    def __init__(self):
+        self.interval = None
+        self.stops = 0
+
+    def stop(self):
+        self.interval = None
+        self.stops += 1
+
+    def start(self, interval):
+        self.interval = interval
+
+
 def _tray_app_without_gui() -> TrayApplication:
     """TrayApplication ohne Qt-Aufbau, nur so weit wie `_refresh` es braucht."""
     app = _app(notifications=True)
@@ -95,6 +110,7 @@ def _tray_app_without_gui() -> TrayApplication:
     app.icon_recording = "rot"
     app.icon_speaking = "blau"
     app.status_action = FakeAction()
+    app._stt_release_timer = FakeTimer()
     return app
 
 
@@ -502,6 +518,45 @@ def test_shutdown_leaves_an_untouched_clipboard_alone(tmp_path, monkeypatch):
     """
     app = _dictation_app(tmp_path)
     assert _terminated_shutdown(app, monkeypatch, clipboard_touched=False) == []
+
+
+def test_idle_timer_starts_after_a_dictation_and_pauses_during_one(tmp_path, monkeypatch):
+    """Die Frist zählt Leerlauf, nicht Diktat."""
+    app = _dictation_app(tmp_path)
+    app.config.stt_warm_minutes = 10
+    monkeypatch.setattr(stt_module, "too_quiet", lambda path, threshold: (False, 0.2))
+    monkeypatch.setattr(stt_module, "load_model", lambda *args, **kwargs: object())
+    app._stt_release_timer.start(600_000)
+    app.start_dictation()
+    assert app._stt_release_timer.interval is None
+    app.finish_dictation()
+    worker = app.stt
+    assert app._stt_release_timer.interval is None
+    app._dictation_finished(worker)
+    assert app._stt_release_timer.interval == 600_000
+    worker.wait(5000)
+
+
+def test_warm_minutes_zero_never_releases(tmp_path):
+    app = _dictation_app(tmp_path)
+    app.config.stt_warm_minutes = 0
+    app._arm_stt_release()
+    assert app._stt_release_timer.interval is None
+
+
+def test_shutdown_frees_the_warm_model(tmp_path, monkeypatch):
+    """Sonst bliebe das Modell bis zum Prozessende im VRAM – auch beim Beenden."""
+    import pc_sound_recorder.app as app_module
+
+    app = _dictation_app(tmp_path)
+    app_module._voice_threads.clear()
+    freigegeben = []
+    monkeypatch.setattr(app_module, "release_model", lambda: freigegeben.append(True))
+    app.duration_timer = SimpleNamespace(stop=lambda: None)
+    app.recorder = SimpleNamespace(is_recording=False, cancel=lambda: None)
+    app.shutdown()
+    assert freigegeben == [True]
+    assert app._stt_release_timer.stops
 
 
 def test_dictation_shortcut_is_named_and_can_degrade():
