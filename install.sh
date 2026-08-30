@@ -44,8 +44,32 @@ command -v wl-copy >/dev/null 2>&1 \
 if ! command -v mimic >/dev/null 2>&1 && [[ ! -x "$HOME/.local/bin/mimic" ]]; then
   warn "mimic fehlt – das Vorlesen ist nicht möglich."
 fi
-python3 -c "import PySide6" 2>/dev/null || warn "PySide6 ist für python3 nicht importierbar."
-python3 -c "import evdev" 2>/dev/null || warn "evdev ist für python3 nicht importierbar."
+# Bibliothekspakete kommen meist nur als Abhängigkeit eines anderen Pakets
+# herein und gelten danach als verwaist: ein `pacman -Rns` an ganz anderer
+# Stelle nimmt sie mit. Genau so verschwand python-evdev am 2026-08-30, und PTR
+# startete danach gar nicht mehr. Werkzeuge wie ffmpeg, ydotool oder
+# wl-clipboard installiert man ausdrücklich – dort wäre der Hinweis Lärm.
+#
+# Nur vorgeschlagen, nie ausgeführt: install.sh läuft ohne Root.
+pin_hint() {
+  local package="$1"
+  if command -v pacman >/dev/null 2>&1 \
+     && pacman -Qq "$package" >/dev/null 2>&1 \
+     && ! pacman -Qe "$package" >/dev/null 2>&1; then
+    warn "$package ist nur als Abhängigkeit installiert – das nächste \`pacman -Rns\` kann es mitnehmen. Festnageln mit: sudo pacman -D --asexplicit $package"
+  fi
+}
+
+if python3 -c "import PySide6" 2>/dev/null; then
+  pin_hint pyside6
+else
+  warn "PySide6 ist für python3 nicht importierbar – nachinstallieren mit: sudo pacman -S --asexplicit pyside6"
+fi
+if python3 -c "import evdev" 2>/dev/null; then
+  pin_hint python-evdev
+else
+  warn "evdev ist für python3 nicht importierbar – alle vier Kürzel (Aufnahme, Vorlesen, Diktat, Abbrechen) lösen dann nicht aus. Nachinstallieren mit: sudo pacman -S --asexplicit python-evdev (ohne --asexplicit gilt es wieder als verwaist)."
+fi
 if ! id -nG | tr ' ' '\n' | grep -qx input; then
   warn "Benutzer ist nicht in der Gruppe input – die Hotkeys können Tastaturen nicht lesen."
 fi

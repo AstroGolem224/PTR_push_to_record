@@ -1,3 +1,4 @@
+import builtins
 import selectors
 from types import SimpleNamespace
 
@@ -424,6 +425,58 @@ def test_stop_during_dictation_still_releases(monkeypatch):
     # _FakeSelector ruft stop(), sobald kein Stapel mehr ansteht — genau der
     # Fall: Schleife endet, KEY_PAUSE ist noch gedrückt.
     assert _run(thread, [device], monkeypatch) == ["stt_pressed", "stt_released"]
+
+
+# --- Fehlendes Paket python-evdev ---
+
+
+def test_module_import_survives_without_evdev(monkeypatch):
+    """Ohne evdev muss der Import durchgehen, sonst stirbt PTR vor dem Tray."""
+    import importlib
+    import sys
+
+    real_import = builtins.__import__
+
+    def no_evdev(name, *args, **kwargs):
+        if name == "evdev":
+            raise ModuleNotFoundError("No module named 'evdev'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_evdev)
+    monkeypatch.delitem(sys.modules, "evdev", raising=False)
+    reloaded = importlib.reload(hotkey_module)
+    try:
+        assert reloaded.evdev is None
+        thread = reloaded.HotkeyThread("KEY_F8", ("KEY_LEFTMETA",))
+        fired: list[str] = []
+        thread.unavailable.connect(fired.append)
+        thread.run()
+        assert fired == [reloaded.EVDEV_MISSING]
+    finally:
+        # Ohne Wiederherstellen liefe der Rest der Sitzung gegen ein Modul mit
+        # evdev is None.
+        monkeypatch.undo()
+        importlib.reload(hotkey_module)
+
+
+def test_missing_package_message_names_package_command_and_all_shortcuts():
+    message = hotkey_module.EVDEV_MISSING
+    assert "python-evdev" in message
+    assert "--asexplicit" in message
+    for shortcut in ("Aufnahme", "Vorlesen", "Diktat", "Abbrechen"):
+        assert shortcut in message
+
+
+def test_missing_input_group_keeps_its_own_message(monkeypatch):
+    """evdev da, aber keine lesbare Tastatur: der Rechte-Fall, nicht der Paket-Fall."""
+    thread = HotkeyThread("KEY_F8", ("KEY_LEFTMETA",))
+    fired: list[str] = []
+    thread.unavailable.connect(fired.append)
+    monkeypatch.setattr(hotkey_module.evdev, "list_devices", list)
+    thread.run()
+    assert len(fired) == 1
+    assert "Gruppe input" in fired[0]
+    assert "python-evdev" not in fired[0]
 
 
 def test_last_device_lost_is_a_real_total_failure(monkeypatch):

@@ -426,6 +426,11 @@ class TrayApplication:
         # `finish_dictation`.
         self._stt_clipboard: tuple | None = None
         self._hotkey_failed = False
+        # Grund des Ausfalls, im Wortlaut der Meldung. Die Blase vergeht nach
+        # Sekunden; hier bleibt er, damit Statuszeile und Tooltip ihn weiter
+        # nennen können — sonst steht nur "nicht verfügbar" da und der Befehl
+        # zum Beheben ist verloren.
+        self._hotkey_error = ""
         self._hotkey_missing: set[str] = set()
         self._silence_bridge = _SilenceBridge()
         self._silence_bridge.warned.connect(self._silence_warning)
@@ -551,6 +556,7 @@ class TrayApplication:
         # Neuer Versuch, neue Chance: die Merker fallen erst, wenn der neue
         # Thread `unavailable` bzw. `degraded` wieder meldet.
         self._hotkey_failed = False
+        self._hotkey_error = ""
         self._hotkey_missing = set()
         if (
             self.config.enabled
@@ -663,8 +669,9 @@ class TrayApplication:
             # Vor dem Bereit-Zweig: ein toter Hotkey-Thread zeigte sonst nach
             # Ablauf der Meldung wieder Grün, der Ausfall wäre unsichtbar.
             self.tray.setIcon(self.icon_disabled)
-            self.tray.setToolTip("PC-Ton & Vorlesen – Hotkey nicht verfügbar")
-            self.status_action.setText(status or "Hotkey nicht verfügbar")
+            reason = f": {self._hotkey_error}" if self._hotkey_error else ""
+            self.tray.setToolTip(f"PC-Ton & Vorlesen – Hotkey nicht verfügbar{reason}")
+            self.status_action.setText(status or f"Hotkey nicht verfügbar{reason}")
         elif (
             self.config.enabled
             or self.config.tts_enabled
@@ -998,7 +1005,8 @@ class TrayApplication:
 
     def hotkey_error(self, message: str) -> None:
         self._hotkey_failed = True
-        self._refresh("Hotkey nicht verfügbar")
+        self._hotkey_error = message
+        self._refresh()
         self._notify(
             "Hotkey nicht verfügbar", message,
             QSystemTrayIcon.MessageIcon.Critical, 6000,

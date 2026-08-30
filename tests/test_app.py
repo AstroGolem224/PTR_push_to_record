@@ -4,6 +4,7 @@ from PySide6.QtWidgets import QSystemTrayIcon
 
 from pc_sound_recorder.app import TrayApplication
 from pc_sound_recorder.config import Config
+from pc_sound_recorder.hotkey import EVDEV_MISSING
 INFO = QSystemTrayIcon.MessageIcon.Information
 WARNING = QSystemTrayIcon.MessageIcon.Warning
 CRITICAL = QSystemTrayIcon.MessageIcon.Critical
@@ -120,10 +121,22 @@ def test_hotkey_error_greys_icon_and_stays_grey():
     assert app.tray.icon == "gruen"
     app.hotkey_error("Keine passende Tastatur lesbar")
     assert app.tray.icon == "grau"
-    assert app.status_action.text == "Hotkey nicht verfügbar"
-    # Der nächste Auffrischer darf nicht wieder Bereit melden.
+    assert app.status_action.text == "Hotkey nicht verfügbar: Keine passende Tastatur lesbar"
+    # Der nächste Auffrischer darf nicht wieder Bereit melden — und den Grund
+    # nicht verlieren, sonst bleibt nach der Blase nur "nicht verfügbar".
     app._refresh()
     assert app.tray.icon == "grau"
+    assert app.status_action.text.endswith("Keine passende Tastatur lesbar")
+
+
+def test_missing_evdev_package_stays_readable_in_the_tray():
+    """Die Blase vergeht; Statuszeile und Tooltip müssen den Befehl behalten."""
+    app = _tray_app_without_gui()
+    app.hotkey_error(EVDEV_MISSING)
+    app._refresh()
+    assert app.tray.icon == "grau"
+    assert "sudo pacman -S --asexplicit python-evdev" in app.status_action.text
+    assert "python-evdev" in app.tray.tooltip
 
 
 def test_restart_hotkey_clears_the_failure_flag():

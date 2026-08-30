@@ -116,6 +116,15 @@ Dasselbe gilt für jedes andere Kürzel, das der Desktop bereits belegt.
 
 - Linux mit PipeWire-Pulse oder PulseAudio (`pactl`)
 - `ffmpeg`, Python, PySide6 und `python-evdev`
+  - `python-evdev` gehört ausdrücklich installiert:
+    `sudo pacman -S --asexplicit python-evdev` (schon vorhanden, aber nur als
+    Abhängigkeit: `sudo pacman -D --asexplicit python-evdev`). Ohne
+    `--asexplicit` gilt es als verwaist und das nächste `pacman -Rns` an ganz
+    anderer Stelle nimmt es mit.
+  - Fehlt es, laufen Tray, Menü und Einstellungen weiter, aber **alle vier
+    Kürzel** (Aufnahme, Vorlesen, Diktat, Abbrechen) lösen nicht mehr aus. Das
+    Tray-Symbol bleibt grau und die Statuszeile nennt Paket und Befehl.
+    `./install.sh` warnt in beiden Fällen.
 - `wl-clipboard` (`wl-paste`) zum Lesen der Wayland-Primärauswahl;
   optional `xclip` für den X11-Zwischenablage-Fallback
 - eine funktionierende lokale Mimic-Installation (`mimic say`, `mimic voices`)

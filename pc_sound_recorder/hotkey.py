@@ -3,8 +3,28 @@ from __future__ import annotations
 import selectors
 import threading
 
-import evdev
 from PySide6.QtCore import QThread, Signal
+
+try:
+    import evdev
+except ModuleNotFoundError:
+    # Kein hartes `import evdev`: app.py zieht dieses Modul beim Start, der
+    # Import sitzt also auf Modulebene und schlägt zu, *bevor* die
+    # QApplication existiert. Fehlt das Paket, starb PTR damit wortlos im
+    # Import — kein Tray, keine Meldung, nichts zu sehen. Stattdessen None,
+    # und gemeldet wird erst in `run()`, wo es ein Tray gibt, das die Meldung
+    # dauerhaft zeigen kann.
+    evdev = None
+
+# Getrennt vom Rechte-Fall ("Gruppe input fehlt"): fehlendes Paket und fehlende
+# Rechte brauchen verschiedene Befehle. `--asexplicit`, weil python-evdev sonst
+# als verwaiste Abhängigkeit gilt und das nächste `pacman -Rns` es wieder
+# mitnimmt — genau so ist es am 2026-08-30 verschwunden.
+EVDEV_MISSING = (
+    "Das Paket python-evdev fehlt – alle vier Kürzel (Aufnahme, Vorlesen, "
+    "Diktat, Abbrechen) lösen nicht aus. Zurückholen mit: "
+    "sudo pacman -S --asexplicit python-evdev"
+)
 
 
 def invalid_key_names(names: tuple[str, ...] | list[str]) -> list[str]:
@@ -110,6 +130,9 @@ class HotkeyThread(QThread):
         return invalid_key_names(names)
 
     def run(self) -> None:
+        if evdev is None:
+            self.unavailable.emit(EVDEV_MISSING)
+            return
         invalid = self._invalid_configured_keys()
         if invalid:
             self.unavailable.emit(
