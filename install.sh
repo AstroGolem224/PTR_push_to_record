@@ -6,6 +6,8 @@ install_dir="${XDG_DATA_HOME:-$HOME/.local/share}/pc-sound-recorder"
 bin_dir="$HOME/.local/bin"
 applications_dir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 autostart_dir="${XDG_CONFIG_HOME:-$HOME/.config}/autostart"
+unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/pc-sound-recorder"
 icon_dir="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps"
 
 version_of() {
@@ -103,7 +105,50 @@ chmod +x "$launcher"
 
 render "$project_dir/packaging/pc-sound-recorder.desktop.in" \
   "$applications_dir/pc-sound-recorder.desktop" "@LAUNCHER@" "$launcher"
-cp "$applications_dir/pc-sound-recorder.desktop" "$autostart_dir/pc-sound-recorder.desktop"
+
+# --- Dauerbetrieb ---
+#
+# Bisher lag hier eine Kopie des Startmenü-Eintrags in ~/.config/autostart.
+# Die startet PTR nur bei der Anmeldung; stirbt der Prozess, holt ihn niemand
+# zurück. Die Nutzer-Unit tut beides. Kein sudo – Nutzer-Units brauchen keins.
+autostart_wanted=1
+if [[ -f "$config_dir/config.json" ]]; then
+  autostart_wanted="$(python3 - "$config_dir/config.json" <<'PY' || echo 1
+import json
+import pathlib
+import sys
+
+try:
+    print(int(bool(json.loads(pathlib.Path(sys.argv[1]).read_text()).get("autostart", True))))
+except Exception:
+    print(1)
+PY
+)"
+fi
+
+if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
+  mkdir -p "$unit_dir"
+  render "$project_dir/packaging/pc-sound-recorder.service.in" \
+    "$unit_dir/pc-sound-recorder.service" "@LAUNCHER@" "$launcher"
+  systemctl --user daemon-reload
+  # Auch bei einer Aktualisierung über eine ältere Installation: liegt der
+  # XDG-Eintrag noch daneben, startet PTR zweimal.
+  rm -f "$autostart_dir/pc-sound-recorder.desktop"
+  if [[ "$autostart_wanted" == "1" ]]; then
+    systemctl --user enable pc-sound-recorder.service >/dev/null
+    echo "Dauerbetrieb aktiv: pc-sound-recorder.service (Neustart nach Absturz)."
+  else
+    systemctl --user disable pc-sound-recorder.service >/dev/null 2>&1 || true
+    echo "Unit angelegt, aber abgeschaltet (autostart=false in den Einstellungen)."
+  fi
+else
+  # Kein systemd im Nutzerkontext: der bisherige Weg, damit die Installation
+  # nicht abbricht. Ohne Neustart nach Absturz.
+  warn "Kein systemd-Nutzer-Manager – Dauerbetrieb über ~/.config/autostart, ohne Neustart nach Absturz."
+  if [[ "$autostart_wanted" == "1" ]]; then
+    cp "$applications_dir/pc-sound-recorder.desktop" "$autostart_dir/pc-sound-recorder.desktop"
+  fi
+fi
 
 # --- Diktat-Umgebung (faster-whisper) ---
 #
@@ -181,4 +226,10 @@ if (( warnings > 0 )); then
 else
   echo "Installiert."
 fi
-echo "Starte mit: $launcher"
+if [[ -f "$unit_dir/pc-sound-recorder.service" ]]; then
+  echo "Starten:  systemctl --user start pc-sound-recorder"
+  echo "Zustand:  systemctl --user status pc-sound-recorder"
+  echo "Läuft PTR bereits von Hand, erst beenden – sonst greift die Sperrdatei."
+else
+  echo "Starte mit: $launcher"
+fi

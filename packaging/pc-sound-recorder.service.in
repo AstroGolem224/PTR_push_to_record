@@ -1,0 +1,47 @@
+[Unit]
+Description=PC-Ton & Vorlesen (PTR)
+
+# graphical-session.target statt default.target, weil PTR eine Tray-Anwendung
+# ist: ohne WAYLAND_DISPLAY/DISPLAY und Sitzungs-D-Bus findet Qt keinen
+# Systembereich und main() bricht mit "Kein Systembereich verfuegbar" ab.
+# default.target ist schon aktiv, bevor Plasma diese Variablen in den
+# Nutzer-Manager schiebt (`systemctl --user show-environment`) -- die App
+# startete dann zu frueh und stuerbe.
+# PartOf sorgt zugleich fuer das saubere Ende: meldet sich Matthias ab, geht
+# PTR mit der Sitzung, statt als Waise weiterzulaufen.
+PartOf=graphical-session.target
+After=graphical-session.target
+
+# Bremse gegen die Neustartschleife: fuenf Versuche in fuenf Minuten, danach
+# bleibt die Unit sichtbar im Zustand "failed" stehen statt CPU zu verbrennen.
+# Das Vorgabefenster (5 je 10 s) griffe mit RestartSec=5 nie -- fuenf Versuche
+# dauern damit 25 s und fallen immer aus dem Fenster.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+# Ueber den Starter, nicht ueber `python3 -m`: er setzt PYTHONPATH und das
+# LD_LIBRARY_PATH auf die CUDA-Wheels der Diktat-venv (siehe
+# packaging/pc-sound-recorder.in). Die Unit erbt beides vom Starter, hier ist
+# also nichts zu wiederholen.
+ExecStart=@LAUNCHER@
+
+# on-failure, nicht always: "Beenden" im Tray-Menue endet mit Rueckgabewert 0
+# und darf die App nicht sofort wiederbeleben. Ein Absturz (Rueckgabewert != 0
+# oder Signal ausser HUP/INT/TERM/PIPE) holt systemd dagegen zurueck -- genau
+# der Fall, der am 2026-08-31 eine Stunde Suche kostete.
+Restart=on-failure
+# Rueckgabewert 1 heisst "Kein Systembereich verfuegbar" (app.py, main()).
+# Daran aendert ein Neustart nichts; das waere nur eine Schleife.
+RestartPreventExitStatus=1
+RestartSec=5
+
+# Haertung nur so weit, wie eine Tray-App sie vertraegt: PTR liest
+# /dev/input/event* (Hotkeys), spricht mit ydotoold und PipeWire und schreibt
+# Aufnahmen in einen frei waehlbaren Ordner unter $HOME -- ProtectHome oder
+# ProtectSystem=strict scheiden damit aus.
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=graphical-session.target

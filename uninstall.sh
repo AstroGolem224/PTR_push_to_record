@@ -5,12 +5,24 @@ install_dir="${XDG_DATA_HOME:-$HOME/.local/share}/pc-sound-recorder"
 launcher="$HOME/.local/bin/pc-sound-recorder"
 applications_dir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 autostart_dir="${XDG_CONFIG_HOME:-$HOME/.config}/autostart"
+unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 icon_dir="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps"
 config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/pc-sound-recorder"
 # Die Diktat-Modelle liegen nicht in der venv, sondern im huggingface-Cache
 # (gemessen: 1,5 G für medium, 2,9 G für large-v3). Sie überleben `rm -rf
 # $install_dir` und blieben bisher unerwähnt liegen.
 model_cache="${HF_HOME:-$HOME/.cache/huggingface}/hub"
+
+# Erst die Unit stoppen, dann die Dateien wegräumen – sonst startet systemd
+# nach einem Absturz noch einmal einen Starter, den es nicht mehr gibt.
+if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
+  systemctl --user disable --now pc-sound-recorder.service >/dev/null 2>&1 || true
+fi
+rm -f "$unit_dir/pc-sound-recorder.service"
+if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
+  systemctl --user daemon-reload
+  systemctl --user reset-failed pc-sound-recorder.service >/dev/null 2>&1 || true
+fi
 
 # Nimmt die Diktat-Umgebung ($install_dir/venv, rund 2,7 GB) mit.
 rm -rf "$install_dir"
@@ -22,7 +34,7 @@ if command -v gtk-update-icon-cache >/dev/null 2>&1; then
   gtk-update-icon-cache -f -t "${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor" 2>/dev/null || true
 fi
 
-echo "App, Starter, Desktop-Einträge, Icon und Diktat-Umgebung entfernt."
+echo "App, Starter, Desktop-Einträge, Nutzer-Unit, Icon und Diktat-Umgebung entfernt."
 
 # Nur die vier Modelle, die PTR überhaupt anbietet (Einstellungsdialog:
 # large-v3-turbo, large-v3, medium, small), ausgeschrieben statt geglobt. Ein

@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 from PySide6.QtWidgets import QSystemTrayIcon
 
+from pc_sound_recorder import app as app_modul
 from pc_sound_recorder.app import TrayApplication
 from pc_sound_recorder.config import Config
 from pc_sound_recorder.hotkey import EVDEV_MISSING
@@ -817,3 +818,44 @@ def test_recent_menu_lists_at_most_five_recordings(tmp_path):
     (tmp_path / "aufnahme.unfertig.mp3").write_bytes(b"x")
     app._populate_recent()
     assert app.recent_menu.items == [f"aufnahme-{index}.mp3" for index in (5, 4, 3, 2, 1)]
+
+
+def test_autostart_schaltet_die_unit_und_raeumt_den_xdg_eintrag_weg(tmp_path, monkeypatch):
+    """Liegt die Unit, entscheidet systemctl – und der XDG-Eintrag muss weg.
+
+    Beides nebeneinander startet PTR zweimal; die zweite Instanz läuft in die
+    QLockFile.
+    """
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    unit = tmp_path / "systemd" / "user" / "pc-sound-recorder.service"
+    unit.parent.mkdir(parents=True)
+    unit.write_text("[Service]\n")
+    xdg = tmp_path / "autostart" / "pc-sound-recorder.desktop"
+    xdg.parent.mkdir(parents=True)
+    xdg.write_text("[Desktop Entry]\n")
+
+    aufrufe = []
+    monkeypatch.setattr(app_modul.shutil, "which", lambda name: "/usr/bin/systemctl")
+    monkeypatch.setattr(
+        app_modul.subprocess, "run", lambda cmd, **kwargs: aufrufe.append(cmd)
+    )
+
+    app_modul.set_autostart(True)
+    assert aufrufe == [["/usr/bin/systemctl", "--user", "enable", "pc-sound-recorder.service"]]
+    assert not xdg.exists()
+
+    app_modul.set_autostart(False)
+    assert aufrufe[-1][2] == "disable"
+    assert not xdg.exists()
+
+
+def test_autostart_faellt_ohne_unit_auf_den_xdg_eintrag_zurueck(tmp_path, monkeypatch):
+    """Aus einem Quell-Checkout heraus gibt es keine Unit – dann der alte Weg."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    xdg = tmp_path / "autostart" / "pc-sound-recorder.desktop"
+
+    app_modul.set_autostart(True)
+    assert "[Desktop Entry]" in xdg.read_text()
+
+    app_modul.set_autostart(False)
+    assert not xdg.exists()

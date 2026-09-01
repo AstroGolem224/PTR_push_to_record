@@ -149,15 +149,42 @@ Mit Diktat:
 ```bash
 chmod +x install.sh
 ./install.sh
-pc-sound-recorder
+systemctl --user start pc-sound-recorder
 ```
 
 Das Installationsskript prüft zuerst die Abhängigkeiten (mit klaren
 Warnungen statt Abbruch), kopiert die App samt Versionsmarke nach
 `~/.local/share`, legt einen Starter in `~/.local/bin`, installiert das
-App-Icon ins hicolor-Theme und aktiviert den Start bei der nächsten
-Anmeldung. Bei einer bestehenden Installation erkennt es die Version und
-meldet „Aktualisiere X → Y".
+App-Icon ins hicolor-Theme und richtet den Dauerbetrieb ein. Bei einer
+bestehenden Installation erkennt es die Version und meldet
+„Aktualisiere X → Y".
+
+## Dauerbetrieb
+
+PTR läuft als systemd-Nutzer-Unit (`~/.config/systemd/user/pc-sound-recorder.service`).
+Sie hängt an `graphical-session.target`, weil die Tray-Anwendung
+`WAYLAND_DISPLAY`/`DISPLAY` und den Sitzungs-D-Bus braucht, und startet PTR
+**nach einem Absturz von selbst neu** — höchstens fünf Versuche in fünf
+Minuten, danach bleibt sie sichtbar im Zustand `failed` stehen. Ein
+planmäßiges „Beenden" aus dem Tray-Menü löst keinen Neustart aus.
+
+```bash
+systemctl --user start pc-sound-recorder     # starten
+systemctl --user stop pc-sound-recorder      # beenden
+systemctl --user restart pc-sound-recorder   # neu starten
+systemctl --user status pc-sound-recorder    # Zustand
+journalctl --user -u pc-sound-recorder -f    # Ausgaben mitlesen
+```
+
+Das Häkchen „Automatisch starten und nach Absturz neu starten" in den
+Einstellungen schaltet dieselbe Unit an und ab (`systemctl --user
+enable/disable`). Den alten Eintrag in `~/.config/autostart` gibt es nicht
+mehr; `./install.sh` entfernt ihn, weil PTR sonst zweimal startete. Nur wenn
+kein systemd-Nutzer-Manager erreichbar ist, fällt die Installation auf diesen
+Weg zurück — dann ohne Neustart nach Absturz.
+
+Der Startmenü-Eintrag „PC-Ton & Vorlesen" bleibt davon unberührt und startet
+die App wie bisher direkt.
 
 Die Diktat-Umgebung wird geprüft, nicht nur gezählt: passt die Python-Version
 nicht oder fehlt `faster_whisper` (etwa nach einem Abbruch), baut ein erneutes
@@ -169,7 +196,8 @@ nicht oder fehlt `faster_whisper` (etwa nach einem Abbruch), baut ein erneutes
 ./uninstall.sh
 ```
 
-Entfernt App, Starter, Desktop-/Autostart-Einträge, Icon und die Diktat-Umgebung.
+Stoppt und deaktiviert die Nutzer-Unit und entfernt sie, dazu App, Starter,
+Desktop-/Autostart-Einträge, Icon und die Diktat-Umgebung.
 Einstellungen (`~/.config/pc-sound-recorder`), Aufnahmen und die geladenen
 Diktat-Modelle (`~/.cache/huggingface/hub`, je Modell 1,5–2,9 GB) bleiben auf
 Nachfrage erhalten (Standard: bleiben).

@@ -48,9 +48,16 @@ def tray_icon(color: str) -> QIcon:
     return QIcon(pixmap)
 
 
+def config_home() -> pathlib.Path:
+    return pathlib.Path(os.environ.get("XDG_CONFIG_HOME", pathlib.Path.home() / ".config"))
+
+
 def autostart_path() -> pathlib.Path:
-    base = pathlib.Path(os.environ.get("XDG_CONFIG_HOME", pathlib.Path.home() / ".config"))
-    return base / "autostart" / f"{APP_ID}.desktop"
+    return config_home() / "autostart" / f"{APP_ID}.desktop"
+
+
+def unit_path() -> pathlib.Path:
+    return config_home() / "systemd" / "user" / f"{APP_ID}.service"
 
 
 def desktop_entry() -> str:
@@ -72,7 +79,35 @@ def desktop_entry() -> str:
 
 
 def set_autostart(enabled: bool) -> None:
+    """Schaltet den Dauerbetrieb: bevorzugt die Nutzer-Unit, sonst XDG-Autostart.
+
+    Die Unit kann mehr als der XDG-Eintrag – sie holt PTR nach einem Absturz
+    zurück, statt bis zur nächsten Anmeldung zu warten. Sie existiert aber nur
+    nach install.sh; aus einem Quell-Checkout heraus gestartet bleibt der
+    bisherige Weg.
+    """
     path = autostart_path()
+    systemctl = shutil.which("systemctl")
+    if systemctl and unit_path().exists():
+        # Beides nebeneinander hieße Doppelstart: die zweite Instanz liefe in
+        # die QLockFile und meldete "Die App läuft bereits im Systembereich".
+        path.unlink(missing_ok=True)
+        try:
+            subprocess.run(
+                [systemctl, "--user", "enable" if enabled else "disable", f"{APP_ID}.service"],
+                # Ein hängendes systemctl darf den GUI-Faden nicht einfrieren.
+                # enable/disable setzt nur einen Symlink, das ist in
+                # Millisekunden erledigt.
+                timeout=10,
+                capture_output=True,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            # Kein laufender Nutzer-Manager (etwa in einer Testumgebung).
+            # Der Schalter bleibt in der Konfiguration stehen; install.sh
+            # zieht ihn beim nächsten Lauf nach.
+            pass
+        return
     if enabled:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(desktop_entry(), encoding="utf-8")
@@ -155,7 +190,11 @@ class SettingsDialog(QDialog):
         folder_row = QHBoxLayout()
         folder_row.addWidget(self.folder, 1)
         folder_row.addWidget(choose)
-        self.autostart = QCheckBox("Automatisch bei der Anmeldung starten")
+        self.autostart = QCheckBox("Automatisch starten und nach Absturz neu starten")
+        self.autostart.setToolTip(
+            "Schaltet die systemd-Nutzer-Unit pc-sound-recorder.service.\n"
+            "Zustand ansehen: systemctl --user status pc-sound-recorder"
+        )
         self.autostart.setChecked(config.autostart)
 
         self.tts_enabled = QCheckBox(
