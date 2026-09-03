@@ -109,3 +109,13 @@ def test_config_round_trip_with_stt_fields(tmp_path):
     )
     original.save(path)
     assert Config.load(path) == original
+
+
+def test_unknown_stt_engine_falls_back_to_parakeet(tmp_path):
+    """Tippfehler in config.json dürfen UI und recognize() nicht auseinanderziehen."""
+    path = tmp_path / "config.json"
+    path.write_text(
+        '{"output_dir": "/tmp", "stt_engine": "vosk"}', encoding="utf-8"
+    )
+    assert Config.load(path).stt_engine == "parakeet"
+    assert Config(output_dir="/tmp", stt_engine="whisper").stt_engine == "whisper"
