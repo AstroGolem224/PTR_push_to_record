@@ -52,6 +52,11 @@ class Config:
     stt_enabled: bool = False
     stt_trigger_key: str = "KEY_PAUSE"
     stt_modifiers: tuple[str, ...] = ("KEY_LEFTMETA",)
+    # "parakeet" (sherpa-onnx, CPU, aus Little Dictator übernommen) oder
+    # "whisper" (faster-whisper, GPU). Parakeet als Vorgabe: gleich gute
+    # Erkennung für DE+EN ohne VRAM-Belegung — die Karte bleibt dem LLM.
+    # stt_model/stt_device/stt_compute_type wirken nur bei "whisper".
+    stt_engine: str = "parakeet"
     stt_model: str = "large-v3-turbo"
     stt_language: str = "de"
     stt_device: str = "cuda"
@@ -93,6 +98,10 @@ class Config:
     def __post_init__(self) -> None:
         if not self.output_dir:
             self.output_dir = str(default_output_dir())
+        # Unbekannte Engine (Tippfehler in config.json, künftige Werte) auf die
+        # Vorgabe ziehen: UI und recognize() sollen nie auseinanderlaufen.
+        if self.stt_engine not in ("parakeet", "whisper"):
+            self.stt_engine = "parakeet"
         self.modifiers = tuple(self.modifiers)
         self.tts_modifiers = tuple(self.tts_modifiers)
         self.stt_modifiers = tuple(self.stt_modifiers)

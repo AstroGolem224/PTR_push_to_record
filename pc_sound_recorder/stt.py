@@ -98,11 +98,21 @@ class SttError(RuntimeError):
     pass
 
 
-def venv_dir() -> pathlib.Path:
+def _data_dir() -> pathlib.Path:
     base = pathlib.Path(
         os.environ.get("XDG_DATA_HOME", pathlib.Path.home() / ".local" / "share")
     )
-    return base / "pc-sound-recorder" / "venv"
+    return base / "pc-sound-recorder"
+
+
+def venv_dir() -> pathlib.Path:
+    return _data_dir() / "venv"
+
+
+# Die Parakeet-Engine (sherpa-onnx, aus Little Dictator übernommen) hat keinen
+# huggingface-Cache: install.sh legt die Modelle hierhin, stt.py lädt nie nach.
+PARAKEET_DIR = _data_dir() / "models" / "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"
+VAD_MODEL = _data_dir() / "models" / "silero_vad.onnx"
 
 
 def venv_site_packages(venv: pathlib.Path | None = None) -> pathlib.Path | None:
@@ -224,10 +234,70 @@ def _build_model(WhisperModel, model: str, **kwargs):
     return WhisperModel(model, **kwargs)
 
 
+class _ParakeetRecognizer:
+    """Markiert einen sherpa-onnx-Recognizer als solchen.
+
+    `transcribe()` bekommt von den Aufrufern nur „das Modell" — ohne diese
+    Hülle müsste es am Objekt raten, welche Engine dahintersteht. Die Tests
+    patchen `load_model`/`transcribe` mit drei Argumenten; die Signaturen
+    bleiben deshalb unverändert, der Dispatch hängt am Typ.
+    """
+
+    def __init__(self, recognizer) -> None:
+        self.recognizer = recognizer
+
+
+def _load_parakeet():
+    """Baut den sherpa-onnx-Recognizer (Parakeet-TDT-0.6B-v3 int8, CPU).
+
+    Übernommen aus Little Dictator (stt/engines.py): NeMo-Transducer mit
+    greedy_search, danach ein Warmup-Leerdecode — der erste echte Decode geht
+    sonst durch den kalten ONNX-Runtime-Pfad und dauert spürbar länger.
+    Läuft immer auf der CPU; stt_device/stt_compute_type betreffen nur Whisper.
+    """
+    sherpa_onnx = _sherpa_onnx()
+    # Alle vier Dateien, nicht nur tokens.txt: bei halbem Bestand stürzte sonst
+    # der C++-Lader von sherpa ab, statt dass ein SttError im Tray landet.
+    fehlend = [
+        name
+        for name in (
+            "encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt",
+        )
+        if not (PARAKEET_DIR / name).is_file()
+    ]
+    if fehlend:
+        raise SttError(
+            f"Das Parakeet-Modell ist unvollständig unter {PARAKEET_DIR} "
+            f"(fehlt: {', '.join(fehlend)}). "
+            "`./install.sh` lädt es herunter (rund 640 MB)."
+        )
+    recognizer = sherpa_onnx.OfflineRecognizer.from_transducer(
+        encoder=str(PARAKEET_DIR / "encoder.int8.onnx"),
+        decoder=str(PARAKEET_DIR / "decoder.int8.onnx"),
+        joiner=str(PARAKEET_DIR / "joiner.int8.onnx"),
+        tokens=str(PARAKEET_DIR / "tokens.txt"),
+        num_threads=THREADS,
+        sample_rate=16000,
+        decoding_method="greedy_search",
+        # model_type="nemo" ist bewusst ungültig-erklärt: sherpa-onnx 1.13.x
+        # wählt dann automatisch den NeMo/TDT-Pfad; der Default "transducer"
+        # scheitert an fehlendem vocab_size im Decoder.
+        model_type="nemo",
+    )
+    import numpy                        # liegt in der venv, neben sherpa-onnx
+
+    silence = numpy.zeros(16000, dtype=numpy.float32)
+    stream = recognizer.create_stream()
+    stream.accept_waveform(16000, silence)
+    recognizer.decode_stream(stream)
+    return _ParakeetRecognizer(recognizer)
+
+
 def load_model(
     model: str = "large-v3-turbo",
     device: str = "cuda",
     compute_type: str = "int8_float16",
+    engine: str = "whisper",
 ):
     """Lädt das Erkennungsmodell. GPU, wenn sie erreichbar ist, sonst CPU.
 
@@ -242,7 +312,12 @@ def load_model(
     Der Rückfall auf CPU ist kein Zierrat: ohne LD_LIBRARY_PATH auf die
     Nvidia-lib-Ordner findet ctranslate2 libcublas nicht, und dann soll das
     Diktat langsamer laufen statt gar nicht.
+
+    `engine="parakeet"` ignoriert model/device/compute_type und lädt den
+    sherpa-onnx-Recognizer — CPU, keine Quantisierungswahl, kein GPU-Rückfall.
     """
+    if engine == "parakeet":
+        return _load_parakeet()
     WhisperModel = _whisper_model()
     if device == "cuda":
         try:
@@ -254,23 +329,28 @@ def load_model(
     )
 
 
-# Das warm gehaltene Modell. Schlüssel ist, wonach gefragt wurde (Modell, Gerät,
-# Quantisierung) — ändert der Nutzer eine Einstellung, fällt der alte Eintrag
-# weg statt still weiterbenutzt zu werden.
+# Das warm gehaltene Modell. Schlüssel ist, wonach gefragt wurde (Engine,
+# Modell, Gerät, Quantisierung) — ändert der Nutzer eine Einstellung, fällt der
+# alte Eintrag weg statt still weiterbenutzt zu werden.
 _cache_lock = threading.Lock()
-_cache: tuple[tuple[str, str, str], object] | None = None
+_cache: tuple[tuple[str, str, str, str], object] | None = None
 
 
-def _cached_model(model: str, device: str, compute_type: str):
+def _cached_model(model: str, device: str, compute_type: str, engine: str = "whisper"):
     """Modell aus dem Cache oder frisch geladen. **Nur mit `_cache_lock`.**"""
     global _cache
-    key = (model, device, compute_type)
+    key = (engine, model, device, compute_type)
     if _cache is not None and _cache[0] == key:
         return _cache[1]
     _cache = None                       # altes Gewicht erst freigeben, dann laden
-    whisper = load_model(model, device, compute_type)
-    _cache = (key, whisper)
-    return whisper
+    # Whisper weiter mit drei Argumenten: die Tests patchen `load_model` mit
+    # genau dieser Stelligkeit, und für sie ist die vierte reine Vorgabe.
+    if engine == "parakeet":
+        loaded = load_model(model, device, compute_type, engine)
+    else:
+        loaded = load_model(model, device, compute_type)
+    _cache = (key, loaded)
+    return loaded
 
 
 def release_model() -> bool:
@@ -323,6 +403,77 @@ def _whisper_model():
             "Umgebung und baut sie neu."
         ) from error
     return WhisperModel
+
+
+def _sherpa_onnx():
+    """Das Modul `sherpa_onnx`, notfalls über die eigene venv — wie `_whisper_model()`."""
+    try:
+        import sherpa_onnx
+        return sherpa_onnx
+    except ImportError:
+        pass
+    site = venv_site_packages()
+    if site is None:
+        raise SttError(
+            "Die Diktat-Umgebung fehlt. `./install.sh` legt sie unter "
+            f"{venv_dir()} an (rund 2,7 GB)."
+        )
+    if str(site) not in sys.path:
+        sys.path.append(str(site))      # hinten, aus demselben Grund wie oben
+    try:
+        import sherpa_onnx
+    except ImportError as error:
+        raise SttError(
+            f"sherpa-onnx ist in {site} nicht importierbar: {error}. "
+            "`./install.sh` erneut ausführen – es erkennt eine unvollständige "
+            "Umgebung und baut sie neu."
+        ) from error
+    return sherpa_onnx
+
+
+def _wav_samples(path: pathlib.Path):
+    """16-kHz-mono-s16-WAV als float32-Array in [-1, 1] — was sherpa erwartet."""
+    import numpy
+
+    with wave.open(str(path)) as datei:
+        raw = datei.readframes(datei.getnframes())
+    return numpy.frombuffer(raw, dtype=numpy.int16).astype(numpy.float32) / 32768.0
+
+
+def _vad_trim(samples):
+    """Schneidet Stille per Silero-VAD weg — der größte Hebel auf der CPU.
+
+    Nach dem Muster aus Little Dictator (stt/vad.py): sherpas Segment-Erkennung
+    in 100-ms-Chunks füttern, Sprechsegmente behalten, je 450 ms Polster an
+    Anfang und Ende (Anklang und Nachhall des ersten/letzten Lauts). Fehlt die
+    Modelldatei oder findet die VAD gar keine Sprache, geht die ganze Aufnahme
+    unverändert weiter — Trimmen ist Beschleunigung, keine Pflicht.
+    """
+    if not VAD_MODEL.is_file():
+        return samples
+    import numpy
+
+    sherpa_onnx = _sherpa_onnx()
+    config = sherpa_onnx.VadModelConfig()
+    config.silero_vad.model = str(VAD_MODEL)
+    config.silero_vad.threshold = 0.5
+    config.silero_vad.min_silence_duration = 0.45
+    config.sample_rate = 16000
+    vad = sherpa_onnx.VoiceActivityDetector(config, buffer_size_in_seconds=30)
+    chunk = 1600                        # 100 ms; ein einzelner Ruf verkürzt Segmente
+    for start in range(0, len(samples), chunk):
+        vad.accept_waveform(samples[start:start + chunk])
+    vad.flush()
+    segments = []
+    while not vad.empty():
+        segments.append(numpy.asarray(vad.front.samples, dtype=numpy.float32))
+        vad.pop()
+    if not segments:
+        return samples
+    padding = numpy.zeros(16000 * 450 // 1000, dtype=numpy.float32)
+    segments[0] = numpy.concatenate([padding, segments[0]])
+    segments[-1] = numpy.concatenate([segments[-1], padding])
+    return numpy.concatenate(segments)
 
 
 def loudest_window(path: pathlib.Path) -> float:
@@ -387,7 +538,18 @@ def transcribe(model, path: pathlib.Path, language: str = "de") -> str:
     übersetzt an. Wer zwischen Sprachen wechselt, stellt „auto" ein; Whisper
     bestimmt die Sprache dann je Aufnahme selbst, zum Preis eines zusätzlichen
     Durchlaufs über das erste Fenster.
+
+    Ein `_ParakeetRecognizer` geht den sherpa-Weg: WAV lesen, Stille per VAD
+    wegschneiden, greedy decodieren. `language` wird dort ignoriert — das
+    Modell erkennt DE+EN von selbst und hat keinen Sprachschalter.
     """
+    if isinstance(model, _ParakeetRecognizer):
+        samples = _vad_trim(_wav_samples(path))
+        recognizer = model.recognizer
+        stream = recognizer.create_stream()
+        stream.accept_waveform(16000, samples)
+        recognizer.decode_stream(stream)
+        return stream.result.text.strip()
     parts, _info = model.transcribe(
         str(path), language=language or None, vad_filter=True
     )
@@ -401,6 +563,7 @@ def recognize(
     device: str = "cuda",
     compute_type: str = "int8_float16",
     zeiten: dict[str, float] | None = None,
+    engine: str = "whisper",
 ) -> str:
     """Modell holen (warm oder frisch) und erkennen.
 
@@ -421,6 +584,20 @@ def recognize(
     """
     with _cache_lock:
         begonnen = time.monotonic()
+        if engine == "parakeet":
+            # Immer CPU, kein Rückfall nötig — es gibt keinen GPU-Pfad, der
+            # verzögert scheitern könnte. Feste Platzhalter im Schlüssel statt
+            # der Whisper-Einstellungen: ein geändertes stt_model beträfe
+            # Parakeet nicht, würfe das warme Modell aber trotzdem raus.
+            recognizer = _cached_model("parakeet", "cpu", "int8", engine)
+            if zeiten is not None:
+                zeiten["laden"] = time.monotonic() - begonnen
+            begonnen = time.monotonic()
+            try:
+                return transcribe(recognizer, path, language)
+            finally:
+                if zeiten is not None:
+                    zeiten["erkennen"] = time.monotonic() - begonnen
         whisper = _cached_model(model, device, compute_type)
         if zeiten is not None:
             zeiten["laden"] = time.monotonic() - begonnen
@@ -671,6 +848,7 @@ class DictationThread(QThread):
         threshold: float = 0.015,
         clipboard_restore: bool = True,
         compute_type: str = "int8_float16",
+        engine: str = "whisper",
     ) -> None:
         super().__init__()
         self.path = path
@@ -678,6 +856,7 @@ class DictationThread(QThread):
         self.language = language
         self.device = device
         self.compute_type = compute_type
+        self.engine = engine
         self.threshold = threshold
         self.clipboard_restore = clipboard_restore
         # Wird kurz vor dem ersten `wl-copy` gesetzt und vom GUI-Faden gelesen.
@@ -731,7 +910,7 @@ class DictationThread(QThread):
             # Leerlauffrist abläuft (siehe Modul-Docstring).
             text = recognize(
                 self.path, self.model, self.language, self.device,
-                self.compute_type, zeiten,
+                self.compute_type, zeiten, self.engine,
             )
             if not text:
                 self.result.emit(False, "Nichts verstanden")

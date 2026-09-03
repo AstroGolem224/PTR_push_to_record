@@ -6,7 +6,7 @@ launcher="$HOME/.local/bin/pc-sound-recorder"
 applications_dir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 autostart_dir="${XDG_CONFIG_HOME:-$HOME/.config}/autostart"
 unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
-icon_dir="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps"
+icon_base="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor"
 config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/pc-sound-recorder"
 # Die Diktat-Modelle liegen nicht in der venv, sondern im huggingface-Cache
 # (gemessen: 1,5 G für medium, 2,9 G für large-v3). Sie überleben `rm -rf
@@ -24,17 +24,20 @@ if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/d
   systemctl --user reset-failed pc-sound-recorder.service >/dev/null 2>&1 || true
 fi
 
-# Nimmt die Diktat-Umgebung ($install_dir/venv, rund 2,7 GB) mit.
+# Nimmt die Diktat-Umgebung ($install_dir/venv, rund 2,7 GB) und die
+# Parakeet-/Silero-Modelle ($install_dir/models, rund 640 MB) mit.
 rm -rf "$install_dir"
 rm -f "$launcher"
 rm -f "$applications_dir/pc-sound-recorder.desktop"
 rm -f "$autostart_dir/pc-sound-recorder.desktop"
-rm -f "$icon_dir/pc-sound-recorder.svg"
+rm -f "$icon_base/512x512/apps/pc-sound-recorder.png"
+# Ältere Installationen legten ein SVG in den scalable-Zweig.
+rm -f "$icon_base/scalable/apps/pc-sound-recorder.svg"
 if command -v gtk-update-icon-cache >/dev/null 2>&1; then
   gtk-update-icon-cache -f -t "${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor" 2>/dev/null || true
 fi
 
-echo "App, Starter, Desktop-Einträge, Nutzer-Unit, Icon und Diktat-Umgebung entfernt."
+echo "App, Starter, Desktop-Einträge, Nutzer-Unit, Icon, Diktat-Umgebung und Parakeet-Modelle entfernt."
 
 # Nur die vier Modelle, die PTR überhaupt anbietet (Einstellungsdialog:
 # large-v3-turbo, large-v3, medium, small), ausgeschrieben statt geglobt. Ein

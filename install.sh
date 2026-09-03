@@ -8,7 +8,7 @@ applications_dir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 autostart_dir="${XDG_CONFIG_HOME:-$HOME/.config}/autostart"
 unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/pc-sound-recorder"
-icon_dir="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps"
+icon_dir="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/512x512/apps"
 
 version_of() {
   sed -n 's/^version = "\(.*\)"/\1/p' "$1" 2>/dev/null || true
@@ -172,6 +172,9 @@ stt_packages=(
   "ctranslate2==4.8.1"
   "nvidia-cublas-cu12==12.9.2.10"
   "nvidia-cudnn-cu12==9.24.0.43"
+  # Parakeet-Engine (CPU). Gepinnt wie der Rest: sherpa-onnx ändert seine
+  # model_type-Erkennung zwischen Nebenversionen.
+  "sherpa-onnx==1.13.7"
 )
 
 # `-d` genügt nicht: ein Abbruch mitten in den 2,7 GB lässt ein Verzeichnis mit
@@ -184,7 +187,10 @@ stt_venv_ok() {
   [[ -x "$stt_venv/bin/python" ]] || return 1
   version="$("$stt_venv/bin/python" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null)" || return 1
   [[ "$version" == "$python_version" ]] || return 1
-  "$stt_venv/bin/python" -c 'import faster_whisper' >/dev/null 2>&1
+  "$stt_venv/bin/python" -c 'import faster_whisper' >/dev/null 2>&1 || return 1
+  # Auch sherpa-onnx: eine venv aus der Zeit vor der Parakeet-Engine gilt
+  # sonst als vollständig, und die neue Vorgabe-Engine bliebe tot.
+  "$stt_venv/bin/python" -c 'import sherpa_onnx' >/dev/null 2>&1
 }
 
 if stt_venv_ok; then
@@ -213,7 +219,72 @@ else
   trap - INT TERM
 fi
 
-cp "$project_dir/packaging/pc-sound-recorder.svg" "$icon_dir/pc-sound-recorder.svg"
+# --- Diktat-Modelle (Parakeet-Engine + Silero-VAD) ---
+#
+# Anders als faster-whisper lädt sherpa-onnx nichts selbst nach: die Dateien
+# müssen liegen, bevor das erste Diktat läuft. Idempotent — vorhandene Dateien
+# werden nie neu geladen.
+models_dir="$install_dir/models"
+parakeet_dir="$models_dir/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"
+
+download_stt_models() {
+  local parakeet_url="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2"
+  # Fester Tag statt raw/master: ein master-Sprung könnte still ein anderes
+  # Modell liefern, als wogegen PTR getestet ist (geprüft: v5.1.2 liefert 200).
+  local silero_url="https://github.com/snakers4/silero-vad/raw/v5.1.2/src/silero_vad/data/silero_vad.onnx"
+  mkdir -p "$models_dir"
+  if [[ -f "$parakeet_dir/tokens.txt" ]]; then
+    echo "Parakeet-Modell vorhanden: $parakeet_dir"
+  else
+    echo "Lade das Parakeet-Modell (rund 640 MB) nach $parakeet_dir …"
+    local archive="$models_dir/parakeet.tar.bz2"
+    # In ein Staging-Verzeichnis entpacken und erst nach Erfolg atomar
+    # umbenennen: ein Abbruch mitten im tar ließe sonst ein halbes
+    # Modellverzeichnis liegen, das beim nächsten Diktat den sherpa-C++-Lader
+    # trifft statt der Prüfung in stt.py. mktemp unter $models_dir, damit das
+    # mv auf demselben Dateisystem bleibt und wirklich atomar ist.
+    local staging
+    staging="$(mktemp -d "$models_dir/parakeet.staging.XXXXXX")"
+    # Nur die int8-Gewichte und tokens.txt aus dem Archiv – die fp32-Dateien
+    # daneben braucht PTR nicht und sie verdreifachten den Platz.
+    if curl -L --fail -o "$archive" "$parakeet_url" \
+       && tar -xjf "$archive" -C "$staging" --wildcards \
+            "*/encoder.int8.onnx" "*/decoder.int8.onnx" "*/joiner.int8.onnx" "*/tokens.txt" \
+       && [[ -f "$staging/${parakeet_dir##*/}/tokens.txt" ]]; then
+      rm -rf "$parakeet_dir"            # halber Bestand aus alten Läufen
+      mv "$staging/${parakeet_dir##*/}" "$parakeet_dir"
+      echo "Parakeet-Modell geladen."
+    else
+      warn "Das Parakeet-Modell konnte nicht geladen werden – die Parakeet-Engine bleibt aus (Whisper funktioniert weiter)."
+    fi
+    rm -rf "$staging"
+    rm -f "$archive"
+  fi
+  if [[ -f "$models_dir/silero_vad.onnx" ]]; then
+    echo "Silero-VAD vorhanden."
+  elif curl -L --fail -o "$models_dir/silero_vad.onnx.tmp" "$silero_url"; then
+    mv "$models_dir/silero_vad.onnx.tmp" "$models_dir/silero_vad.onnx"
+    echo "Silero-VAD geladen."
+  else
+    rm -f "$models_dir/silero_vad.onnx.tmp"
+    # Kein Beinbruch: stt.py überspringt die Stille-Trimmung, wenn die Datei
+    # fehlt – das Diktat wird nur langsamer, nicht falsch.
+    warn "Silero-VAD konnte nicht geladen werden – das Diktat läuft ohne Stille-Trimmung."
+  fi
+}
+
+if [[ "${PTR_SKIP_STT:-0}" != "0" ]]; then
+  echo "Diktat-Modelle übersprungen (PTR_SKIP_STT gesetzt)."
+elif ! command -v curl >/dev/null 2>&1; then
+  warn "curl fehlt – die Diktat-Modelle (Parakeet, Silero-VAD) wurden nicht geladen."
+else
+  download_stt_models
+fi
+
+cp "$project_dir/packaging/pc-sound-recorder.png" "$icon_dir/pc-sound-recorder.png"
+# Aufräumen nach älteren Installationen: dort lag ein SVG im scalable-Zweig,
+# und das Theme bevorzugte es sonst vor dem neuen PNG.
+rm -f "${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps/pc-sound-recorder.svg"
 if command -v gtk-update-icon-cache >/dev/null 2>&1; then
   gtk-update-icon-cache -f -t "${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor" 2>/dev/null || true
 fi

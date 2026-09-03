@@ -58,10 +58,18 @@ aufgenommen.
 ## Diktat (Meta+Pause)
 
 Taste halten, sprechen, loslassen. `pw-record` nimmt vom Standard-Mikrofon auf,
-`faster-whisper` erkennt lokal (GPU, sonst CPU), und der Text wird über die
+die gewählte Engine erkennt lokal, und der Text wird über die
 Zwischenablage mit `ydotool` ins fokussierte Fenster eingefügt – unter Wayland
 gibt es keinen anderen Weg in ein fremdes Fenster.
 
+- **Zwei Engines, Vorgabe Parakeet.** `Parakeet` (sherpa-onnx,
+  Parakeet-TDT-0.6B-v3 int8, aus Little Dictator übernommen) läuft rein auf
+  der CPU, erkennt Deutsch und Englisch automatisch und belegt kein VRAM –
+  `install.sh` lädt die Modelle (**rund 640 MB**) nach
+  `~/.local/share/pc-sound-recorder/models/`, dazu Silero-VAD, das vor der
+  Erkennung die Stille wegschneidet. Wer lieber `Whisper` (faster-whisper,
+  GPU) will, schaltet in den Einstellungen die Diktat-Engine um; Modell,
+  Sprache, Gerät und Quantisierung gelten nur dort.
 - **Modell, Sprache und Stilleschwelle** stehen in den Einstellungen. Beim
   ersten Diktat lädt das gewählte Modell nach (`large-v3-turbo`: rund 1,5 GB);
   dafür braucht dieser eine Lauf eine Netzverbindung, danach arbeitet das

@@ -244,6 +244,16 @@ class SettingsDialog(QDialog):
             f"Diktat: {shortcut_label(config, stt=True)} halten, sprechen, loslassen"
         )
         self.stt_enabled.setChecked(config.stt_enabled)
+        self.stt_engine = QComboBox()
+        self.stt_engine.addItem("Parakeet (CPU, schnell)", "parakeet")
+        self.stt_engine.addItem("Whisper (GPU)", "whisper")
+        self.stt_engine.setCurrentIndex(
+            max(self.stt_engine.findData(config.stt_engine), 0)
+        )
+        self.stt_engine.setToolTip(
+            "Parakeet erkennt Deutsch und Englisch automatisch auf der CPU.\n"
+            "Modell, Sprache und Gerät darunter wirken nur bei Whisper."
+        )
         self.stt_model = QComboBox()
         for name in ("large-v3-turbo", "large-v3", "medium", "small"):
             self.stt_model.addItem(name, name)
@@ -292,6 +302,7 @@ class SettingsDialog(QDialog):
         form.addRow("Vorlesen-Hotkey:", tts_shortcut_row)
         form.addRow("Diktat-Hotkey:", stt_shortcut_row)
         form.addRow("Abbrechen-Hotkey:", stop_shortcut_row)
+        form.addRow("Diktat-Engine:", self.stt_engine)
         form.addRow("Diktat-Modell:", self.stt_model)
         form.addRow("Diktat-Sprache:", self.stt_language)
         form.addRow("Diktat-Stilleschwelle:", self.stt_threshold)
@@ -440,6 +451,7 @@ class SettingsDialog(QDialog):
         config.stt_enabled = self.stt_enabled.isChecked()
         config.stt_modifiers = MODIFIER_OPTIONS[self.stt_modifier.currentText()]
         config.stt_trigger_key = self.stt_trigger.currentData()
+        config.stt_engine = self.stt_engine.currentData()
         config.stt_model = self.stt_model.currentData()
         config.stt_language = self.stt_language.currentData()
         config.stt_threshold = self.stt_threshold.value()
@@ -888,6 +900,7 @@ class TrayApplication:
             threshold=self.config.stt_threshold,
             clipboard_restore=self.config.stt_clipboard_restore,
             compute_type=self.config.stt_compute_type,
+            engine=self.config.stt_engine,
         )
         self.stt = worker
         worker.result.connect(lambda ok, message: self._dictation_result(worker, ok, message))

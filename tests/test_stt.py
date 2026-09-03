@@ -571,6 +571,188 @@ def test_model_download_gets_its_own_message():
     assert stt._fehlertext(OSError("Platte voll")) == "Diktat fehlgeschlagen: Platte voll"
 
 
+# --- Parakeet-Engine (sherpa-onnx) ------------------------------------------
+
+
+class FakeStream:
+    def __init__(self):
+        self.samples = None
+        self.result = type("Result", (), {"text": " Hallo Parakeet "})()
+
+    def accept_waveform(self, rate, samples):
+        self.samples = samples
+
+
+class FakeRecognizer:
+    def __init__(self):
+        self.decoded = []
+
+    def create_stream(self):
+        return FakeStream()
+
+    def decode_stream(self, stream):
+        self.decoded.append(stream)
+
+
+class FakeVad:
+    """Segment-Erkennung als Attrappe: liefert ein festes Sprechsegment."""
+
+    built = 0
+
+    def __init__(self, config, buffer_size_in_seconds):
+        FakeVad.built += 1
+        self._segments = [list(range(1600))]        # ein 100-ms-Segment
+
+    def accept_waveform(self, samples):
+        pass
+
+    def flush(self):
+        pass
+
+    def empty(self):
+        return not self._segments
+
+    @property
+    def front(self):
+        return type("Segment", (), {"samples": [0.5] * len(self._segments[0])})()
+
+    def pop(self):
+        self._segments.pop()
+
+
+@pytest.fixture
+def fake_sherpa(monkeypatch, tmp_path):
+    """Ein sherpa_onnx-Attrappenmodul plus vollständiges Parakeet-Verzeichnis.
+
+    Kein echtes Modell, kein Netz: `from_transducer` zählt nur die Aufrufe.
+    VAD_MODEL zeigt auf eine fehlende Datei — der Trim wird übersprungen,
+    Tests mit VAD legen die Datei selbst an.
+    """
+    import types
+
+    module = types.ModuleType("sherpa_onnx")
+    recognizers = []
+
+    class OfflineRecognizer:
+        calls = []
+
+        @classmethod
+        def from_transducer(cls, **kwargs):
+            cls.calls.append(kwargs)
+            recognizers.append(FakeRecognizer())
+            return recognizers[-1]
+
+    OfflineRecognizer.calls = []
+    FakeVad.built = 0
+    module.OfflineRecognizer = OfflineRecognizer
+    module.VadModelConfig = lambda: type(
+        "Config", (), {"silero_vad": type("Silero", (), {})(), "sample_rate": 0}
+    )()
+    module.VoiceActivityDetector = FakeVad
+    monkeypatch.setitem(__import__("sys").modules, "sherpa_onnx", module)
+    model_dir = tmp_path / "models" / "parakeet"
+    model_dir.mkdir(parents=True)
+    for name in ("encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt"):
+        (model_dir / name).write_bytes(b"x")
+    monkeypatch.setattr(stt, "PARAKEET_DIR", model_dir)
+    monkeypatch.setattr(stt, "VAD_MODEL", tmp_path / "models" / "silero_vad.onnx")
+    module.recognizers = recognizers
+    return module
+
+
+def test_parakeet_engine_takes_the_sherpa_path(fake_sherpa, tmp_path):
+    """config parakeet → sherpa-Recognizer, greedy, Warmup + ein echter Decode."""
+    path = _wav(tmp_path / "laut.wav", seconds=1.0, amplitude=8000)
+    assert stt.recognize(path, engine="parakeet") == "Hallo Parakeet"
+    (call,) = fake_sherpa.OfflineRecognizer.calls
+    assert call["decoding_method"] == "greedy_search"
+    assert call["model_type"] == "nemo"
+    assert call["tokens"].endswith("tokens.txt")
+    # Warmup-Leerdecode beim Laden plus die Erkennung selbst.
+    (recognizer,) = fake_sherpa.recognizers
+    assert len(recognizer.decoded) == 2
+
+
+def test_whisper_engine_keeps_the_old_path(fake_sherpa, monkeypatch, tmp_path):
+    """config whisper → alter Pfad: load_model/transcribe, kein sherpa."""
+    monkeypatch.setattr(stt, "load_model", lambda model, device, compute_type: object())
+    monkeypatch.setattr(stt, "transcribe", lambda model, wav, language: "Whisper-Text")
+    assert stt.recognize(tmp_path / "x.wav", engine="whisper") == "Whisper-Text"
+    assert fake_sherpa.OfflineRecognizer.calls == []
+
+
+def test_cache_key_separates_the_engines(fake_sherpa, monkeypatch, tmp_path):
+    """Engine-Wechsel lädt neu, statt das Modell der anderen Engine zu nehmen."""
+    path = _wav(tmp_path / "laut.wav", seconds=1.0, amplitude=8000)
+    whisper_ladungen = []
+    original_load = stt.load_model
+
+    def load_model(model, device, compute_type, engine="whisper"):
+        if engine == "parakeet":
+            return original_load(model, device, compute_type, engine)
+        whisper_ladungen.append(model)
+        return object()
+
+    monkeypatch.setattr(stt, "load_model", load_model)
+    monkeypatch.setattr(
+        stt,
+        "transcribe",
+        lambda model, wav, language: (
+            "Parakeet" if isinstance(model, stt._ParakeetRecognizer) else "Whisper"
+        ),
+    )
+    assert stt.recognize(path, engine="parakeet") == "Parakeet"
+    assert stt.recognize(path, engine="whisper") == "Whisper"
+    assert stt.recognize(path, engine="parakeet") == "Parakeet"
+    # Jeder Wechsel lädt: derselbe Schlüssel hätte das falsche Modell geliefert.
+    assert whisper_ladungen == ["large-v3-turbo"]
+    assert len(fake_sherpa.OfflineRecognizer.calls) == 2
+
+
+def test_missing_vad_model_skips_the_trim(fake_sherpa, tmp_path):
+    """Fehlt silero_vad.onnx, läuft die Erkennung ohne Trim – kein Fehler."""
+    path = _wav(tmp_path / "laut.wav", seconds=1.0, amplitude=8000)
+    assert not stt.VAD_MODEL.is_file()
+    assert stt.recognize(path, engine="parakeet") == "Hallo Parakeet"
+    assert FakeVad.built == 0
+
+
+def test_present_vad_model_trims_before_decoding(fake_sherpa, tmp_path):
+    stt.VAD_MODEL.write_bytes(b"vad")
+    path = _wav(tmp_path / "laut.wav", seconds=2.0, amplitude=8000)
+    assert stt.recognize(path, engine="parakeet") == "Hallo Parakeet"
+    assert FakeVad.built == 1
+    (recognizer,) = fake_sherpa.recognizers
+    erkennung = recognizer.decoded[-1]          # [0] ist der Warmup
+    # Segment (1600) plus je 450 ms Polster vorn und hinten – nicht die 2 s Datei.
+    assert len(erkennung.samples) == 1600 + 2 * (16000 * 450 // 1000)
+
+
+def test_missing_parakeet_model_gives_a_clear_error(fake_sherpa, monkeypatch, tmp_path):
+    monkeypatch.setattr(stt, "PARAKEET_DIR", tmp_path / "fehlt")
+    with pytest.raises(stt.SttError, match="install.sh"):
+        stt.recognize(tmp_path / "x.wav", engine="parakeet")
+
+
+def test_half_a_parakeet_model_gives_a_clear_error(fake_sherpa, tmp_path):
+    """Ein Abbruch beim Entpacken: SttError statt Absturz im C++-Lader."""
+    (stt.PARAKEET_DIR / "joiner.int8.onnx").unlink()
+    with pytest.raises(stt.SttError, match="joiner.int8.onnx"):
+        stt.recognize(tmp_path / "x.wav", engine="parakeet")
+    assert fake_sherpa.OfflineRecognizer.calls == []
+
+
+def test_whisper_settings_do_not_evict_the_warm_parakeet(fake_sherpa, tmp_path):
+    """Der Parakeet-Schlüssel ist fest: stt_model/compute_type sind Whisper-Kram."""
+    path = _wav(tmp_path / "laut.wav", seconds=1.0, amplitude=8000)
+    assert stt.recognize(path, engine="parakeet") == "Hallo Parakeet"
+    path = _wav(tmp_path / "laut.wav", seconds=1.0, amplitude=8000)
+    assert stt.recognize(
+        path, model="small", compute_type="float16", engine="parakeet"
+    ) == "Hallo Parakeet"
+    assert len(fake_sherpa.OfflineRecognizer.calls) == 1
+
+
 def test_venv_site_packages_finds_the_version_folder(tmp_path):
     site = tmp_path / "venv" / "lib" / "python3.14" / "site-packages"
     site.mkdir(parents=True)
