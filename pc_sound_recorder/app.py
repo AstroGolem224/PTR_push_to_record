@@ -301,12 +301,12 @@ class SettingsDialog(QDialog):
         # Entwicklungsstart das Bild.
         self.figure = QLabel()
         self.figure.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        pixmap = QIcon.fromTheme(APP_ID).pixmap(96, 96)
+        pixmap = QIcon.fromTheme(APP_ID).pixmap(192, 192)
         if pixmap.isNull():
             source = pathlib.Path(__file__).resolve().parent.parent / "packaging" / f"{APP_ID}.png"
             if source.is_file():
                 pixmap = QPixmap(str(source)).scaled(
-                    96, 96,
+                    192, 192,
                     Qt.AspectRatioMode.KeepAspectRatio,
                     Qt.TransformationMode.SmoothTransformation,
                 )
