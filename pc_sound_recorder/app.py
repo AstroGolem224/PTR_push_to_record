@@ -296,20 +296,21 @@ class SettingsDialog(QDialog):
         stt_clipboard_hint.setWordWrap(True)
         stt_clipboard_hint.setStyleSheet("color: #e67700;")
 
-        # Die Figur oben im Dialog: bevorzugt aus dem Icon-Theme (installiert),
-        # sonst direkt aus dem Repo — so zeigt auch ein uninstallierter
-        # Entwicklungsstart das Bild.
+        # Die ganze Figur oben im Dialog. Eigene Datei im Paket (wird von
+        # install.sh mitkopiert) statt des Theme-Icons: das Icon zeigt nur
+        # noch Kopf und Schultern, der Dialog soll den Ganzkörper zeigen.
         self.figure = QLabel()
         self.figure.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        pixmap = QIcon.fromTheme(APP_ID).pixmap(192, 192)
+        source = pathlib.Path(__file__).resolve().parent / "figur.png"
+        pixmap = QPixmap(str(source)) if source.is_file() else QPixmap()
         if pixmap.isNull():
-            source = pathlib.Path(__file__).resolve().parent.parent / "packaging" / f"{APP_ID}.png"
-            if source.is_file():
-                pixmap = QPixmap(str(source)).scaled(
-                    192, 192,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
+            pixmap = QIcon.fromTheme(APP_ID).pixmap(192, 192)
+        else:
+            pixmap = pixmap.scaled(
+                192, 192,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
         if not pixmap.isNull():
             self.figure.setPixmap(pixmap)
 
