@@ -296,6 +296,23 @@ class SettingsDialog(QDialog):
         stt_clipboard_hint.setWordWrap(True)
         stt_clipboard_hint.setStyleSheet("color: #e67700;")
 
+        # Die Figur oben im Dialog: bevorzugt aus dem Icon-Theme (installiert),
+        # sonst direkt aus dem Repo — so zeigt auch ein uninstallierter
+        # Entwicklungsstart das Bild.
+        self.figure = QLabel()
+        self.figure.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        pixmap = QIcon.fromTheme(APP_ID).pixmap(96, 96)
+        if pixmap.isNull():
+            source = pathlib.Path(__file__).resolve().parent.parent / "packaging" / f"{APP_ID}.png"
+            if source.is_file():
+                pixmap = QPixmap(str(source)).scaled(
+                    96, 96,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+        if not pixmap.isNull():
+            self.figure.setPixmap(pixmap)
+
         form = QFormLayout()
         form.addRow("", self.enabled)
         form.addRow("Aufnahme-Hotkey:", shortcut_row)
@@ -324,6 +341,7 @@ class SettingsDialog(QDialog):
         inner = QWidget()
         inner_layout = QVBoxLayout(inner)
         inner_layout.setContentsMargins(0, 0, 0, 0)
+        inner_layout.addWidget(self.figure)
         inner_layout.addLayout(form)
         for widget in (
             self.tts_enabled, self.voice_hint, self.notifications,

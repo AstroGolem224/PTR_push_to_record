@@ -216,6 +216,16 @@ def _dialog(qapp, monkeypatch) -> SettingsDialog:
     return SettingsDialog(Config(output_dir="/tmp"))
 
 
+def test_settings_dialog_shows_the_figure(qapp, monkeypatch):
+    # GIVEN ein frischer Einstellungsdialog (Repo enthält packaging/<APP_ID>.png):
+    dialog = _dialog(qapp, monkeypatch)
+
+    # WHEN wir das Figuren-Label betrachten,
+    # THEN trägt es ein geladenes Bild — Theme-Icon oder Repo-PNG als Rückfall:
+    assert dialog.figure.pixmap() is not None
+    assert not dialog.figure.pixmap().isNull()
+
+
 def test_settings_rejects_identical_hotkeys(qapp, monkeypatch):
     dialog = _dialog(qapp, monkeypatch)
     # Vorlese-Hotkey auf dieselbe Kombination wie die Aufnahme stellen.
