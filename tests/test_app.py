@@ -429,7 +429,7 @@ def test_release_after_restart_does_nothing(tmp_path):
 
 
 def test_ready_state_counts_the_dictation_alone():
-    """Nur Diktat aktiv: das Tray meldete „Deaktiviert", obwohl Meta+Pause geht.
+    """Nur Diktat aktiv: das Tray meldete „Deaktiviert", obwohl Pause geht.
 
     Grau ist nicht nur falsch beschriftet – ein Linksklick aufs graue Symbol
     schaltet die Aufnahme ein, die der Nutzer gar nicht wollte.
@@ -441,7 +441,7 @@ def test_ready_state_counts_the_dictation_alone():
     app.config.stop_enabled = False
     app._refresh()
     assert app.tray.icon == "gruen"
-    assert app.status_action.text == "Bereit: Meta+Pause Diktat"
+    assert app.status_action.text == "Bereit: Pause Diktat"
 
 
 def test_dictation_stays_visible_during_a_recording(tmp_path):
@@ -589,11 +589,11 @@ def test_dictation_shortcut_is_named_and_can_degrade():
     app.config.stop_enabled = False
     app._refresh()
     assert app.status_action.text == (
-        "Bereit: Meta+F8 Aufnahme · Meta+Rollen Vorlesen · Meta+Pause Diktat"
+        "Bereit: Meta+F8 Aufnahme · Meta+Rollen Vorlesen · Pause Diktat"
     )
     app.hotkey_degraded(["stt"])
     assert app.status_action.text == "Bereit: Meta+F8 Aufnahme · Meta+Rollen Vorlesen"
-    assert "Meta+Pause (Diktat)" in app.tray.calls[-1][1]
+    assert "Pause (Diktat)" in app.tray.calls[-1][1]
 
 
 # --- Abbrechen (viertes Kürzel) ---------------------------------------------

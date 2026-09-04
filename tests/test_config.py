@@ -79,7 +79,7 @@ def test_shortcut_label_tts():
 
 
 def test_shortcut_label_stt():
-    assert shortcut_label(Config(output_dir="/tmp"), stt=True) == "Meta+Pause"
+    assert shortcut_label(Config(output_dir="/tmp"), stt=True) == "Pause"
 
 
 def test_old_config_receives_stt_defaults(tmp_path):
@@ -88,7 +88,7 @@ def test_old_config_receives_stt_defaults(tmp_path):
     config = Config.load(path)
     assert config.stt_enabled is False
     assert config.stt_trigger_key == "KEY_PAUSE"
-    assert config.stt_modifiers == ("KEY_LEFTMETA",)
+    assert config.stt_modifiers == ()
     assert config.stt_model == "large-v3-turbo"
     assert config.stt_language == "de"
     assert config.stt_device == "cuda"

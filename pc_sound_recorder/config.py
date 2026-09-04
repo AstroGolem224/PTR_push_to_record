@@ -51,7 +51,9 @@ class Config:
     tts_clipboard_fallback: bool = False
     stt_enabled: bool = False
     stt_trigger_key: str = "KEY_PAUSE"
-    stt_modifiers: tuple[str, ...] = ("KEY_LEFTMETA",)
+    # Pause allein: schreibt kein Zeichen, ist in KDE unbelegt, und die
+    # Ein-Hand-Bedienung beim Halten ist bequemer als Meta+Pause.
+    stt_modifiers: tuple[str, ...] = ()
     # "parakeet" (sherpa-onnx, CPU, aus Little Dictator übernommen) oder
     # "whisper" (faster-whisper, GPU). Parakeet als Vorgabe: gleich gute
     # Erkennung für DE+EN ohne VRAM-Belegung — die Karte bleibt dem LLM.
@@ -148,6 +150,9 @@ KEY_LABELS = {
 }
 
 MODIFIER_OPTIONS = {
+    # Leeres Tupel = Auslöser feuert allein. Trägt nur bei Tasten, die selbst
+    # nichts schreiben und in KDE unbelegt sind (Pause, Rollen).
+    "Ohne": (),
     "Meta": ("KEY_LEFTMETA",),
     "Strg+Alt": ("KEY_LEFTCTRL", "KEY_LEFTALT"),
     "Strg+Umschalt": ("KEY_LEFTCTRL", "KEY_LEFTSHIFT"),
@@ -165,6 +170,8 @@ def shortcut_label(
         trigger, modifiers = config.tts_trigger_key, config.tts_modifiers
     else:
         trigger, modifiers = config.trigger_key, config.modifiers
+    if not modifiers:
+        return KEY_LABELS.get(trigger, trigger)
     modifier = next(
         (label for label, keys in MODIFIER_OPTIONS.items() if tuple(keys) == tuple(modifiers)),
         "+".join(key.removeprefix("KEY_").title() for key in modifiers),
