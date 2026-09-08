@@ -139,7 +139,8 @@ _DE_WORD_RE = re.compile(r"\b[a-zäöüßA-ZÄÖÜ]+\b")
 # ponytail: nur genau zwei Nachkommastellen („3 Euro 5" und „10 Euro 3 Mal"
 # bleiben), Euro/Franken mit Komma, Dollar/Pfund mit Punkt.
 _AMOUNT_RE = re.compile(
-    r"\b(\d+) (Euro|Franken|Dollars?|Pounds?|Pfund) (\d{2})(?: (?:Cent|cents?|Rappen|Pence))?\b"
+    r"\b(\d+) (Euro|Franken|Dollars?|Pounds?|Pfund) (\d{2})(?: (?:Cent|cents?|Rappen|Pence))?\b",
+    re.IGNORECASE,
 )
 
 
