@@ -97,6 +97,23 @@ gibt es keinen anderen Weg in ein fremdes Fenster.
 - `stt_warm_minutes` und `stt_compute_type` (Vorgabe `int8_float16`) stehen nur
   in `~/.config/pc-sound-recorder/config.json`, nicht im Einstellungsdialog.
 
+### Füllwörter und Glätten
+
+Parakeet gibt „äh", „ähm", „uh" und Stottern 1:1 aus. Zwei Häkchen in den
+Einstellungen räumen nach:
+
+- **Füllwörter entfernen** (ab Werk an): Regex nach Handy-Vorbild, nur
+  sprachunabhängig eindeutige Wörter (äh, ähm, ehm, uh, hm, mhm …) und
+  Wiederholungen ab dreimal. „um" bleibt — im Deutschen eine Präposition.
+  Kostet nichts.
+- **Text glätten (Qwen)** (ab Werk aus, auch im Tray-Menü): ein lokales
+  Qwen3.5-2B (Q4, 1,3 GB, CPU) korrigiert Grammatik und Zeichensetzung, löst
+  „nein ich meine" auf und übersetzt nie. Gemessen 0,9–1,2 s je Satz auf dem
+  9900X3D mit 4 Threads (`stt_polish_threads`, nur in der Datei). Einrichten
+  mit `PTR_LLM=1 ./install.sh`; fehlt Modell oder Wheel, fügt PTR den Text
+  ungeglättet ein und meldet, was fehlt. Das Modell bleibt wie Parakeet warm
+  und fällt mit derselben Leerlauffrist.
+
 ## Bekannte Stolperstellen
 
 **Meta+F9 und Meta+F10 gehören unter KDE schon KWin.** Deshalb liegt das

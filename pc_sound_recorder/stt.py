@@ -77,6 +77,8 @@ from typing import NamedTuple
 
 from PySide6.QtCore import QThread, Signal
 
+from .postprocess import LLMCleaner, strip_fillers
+
 
 # 16 kHz mono ist, was Whisper intern ohnehin daraus macht — gleich so
 # aufnehmen spart das Umrechnen.
@@ -113,6 +115,8 @@ def venv_dir() -> pathlib.Path:
 # huggingface-Cache: install.sh legt die Modelle hierhin, stt.py lädt nie nach.
 PARAKEET_DIR = _data_dir() / "models" / "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"
 VAD_MODEL = _data_dir() / "models" / "silero_vad.onnx"
+# Qwen3.5-2B Q4_K_M fürs Glätten (`stt_polish`); legt `PTR_LLM=1 ./install.sh` ab.
+LLM_MODEL = _data_dir() / "models" / "qwen3.5-2b-q4_k_m.gguf"
 
 
 def venv_site_packages(venv: pathlib.Path | None = None) -> pathlib.Path | None:
@@ -353,6 +357,43 @@ def _cached_model(model: str, device: str, compute_type: str, engine: str = "whi
     return loaded
 
 
+_polish_cache: LLMCleaner | None = None
+
+
+def _venv_on_path() -> None:
+    site = venv_site_packages()
+    if site is not None and str(site) not in sys.path:
+        sys.path.append(str(site))
+
+
+def polish(text: str, threads: int = 4, zeiten: dict[str, float] | None = None) -> tuple[str, str | None]:
+    """Text mit Qwen glätten. Liefert (Text, Warnung) — bei jedem Problem den
+    Text unverändert und eine Zeile, die sagt, was fehlt.
+
+    Kein Abbruch des Diktats: der erkannte Text ist da und gehört eingefügt,
+    ob geglättet oder nicht. Der Cleaner bleibt wie das STT-Modell warm und
+    fällt mit `release_model()`.
+    """
+    global _polish_cache
+    begonnen = time.monotonic()
+    try:
+        with _cache_lock:
+            if _polish_cache is None:
+                _venv_on_path()
+                _polish_cache = LLMCleaner(LLM_MODEL, num_threads=threads)
+            result = _polish_cache.clean(text)
+    except FileNotFoundError:
+        return text, f"Glätten aus: Qwen-Modell fehlt ({LLM_MODEL.name}) – PTR_LLM=1 ./install.sh"
+    except ImportError:
+        return text, "Glätten aus: llama-cpp-python fehlt – PTR_LLM=1 ./install.sh"
+    except Exception as error:      # noqa: BLE001 – Glätten darf das Diktat nie kosten
+        return text, f"Glätten fehlgeschlagen: {_fehlertext(error)}"
+    finally:
+        if zeiten is not None:
+            zeiten["glätten"] = time.monotonic() - begonnen
+    return result, None
+
+
 def release_model() -> bool:
     """Gibt das warm gehaltene Modell frei. True, wenn es wirklich weg ist.
 
@@ -361,11 +402,12 @@ def release_model() -> bool:
     Dauer der Erkennung ein. Ein `False` ist kein Fehler — die Frist startet
     nach jedem Diktat neu, der nächste Ablauf räumt nach.
     """
-    global _cache
+    global _cache, _polish_cache
     if not _cache_lock.acquire(blocking=False):
         return False
     try:
-        released, _cache = _cache is not None, None
+        released = _cache is not None or _polish_cache is not None
+        _cache, _polish_cache = None, None
     finally:
         _cache_lock.release()
     return released
@@ -849,9 +891,15 @@ class DictationThread(QThread):
         clipboard_restore: bool = True,
         compute_type: str = "int8_float16",
         engine: str = "whisper",
+        filler_filter: bool = True,
+        polish: bool = False,
+        polish_threads: int = 4,
     ) -> None:
         super().__init__()
         self.path = path
+        self.filler_filter = filler_filter
+        self.polish = polish
+        self.polish_threads = polish_threads
         self.model = model
         self.language = language
         self.device = device
@@ -915,6 +963,14 @@ class DictationThread(QThread):
             if not text:
                 self.result.emit(False, "Nichts verstanden")
                 return
+            warnung = None
+            if self.filler_filter:
+                text = strip_fillers(text)
+            if self.polish and text:
+                text, warnung = polish(text, self.polish_threads, zeiten)
+            if not text:
+                self.result.emit(False, "Nur Füllwörter – nichts eingefügt")
+                return
             if self.cancelled:
                 # Abgebrochen, während erkannt wurde: der Text darf jetzt nicht
                 # mehr in ein Fenster fallen, in dem der Nutzer längst weiter
@@ -924,6 +980,10 @@ class DictationThread(QThread):
             begonnen = time.monotonic()
             erfolg, meldung = paste(text, restore=self.clipboard_restore)
             zeiten["einfügen"] = time.monotonic() - begonnen
+            if erfolg and warnung:
+                # Eingefügt, aber nicht geglättet: als Warnung melden, sonst
+                # bliebe ein fehlendes Modell unbemerkt in der Statuszeile.
+                erfolg, meldung = False, f"{meldung} – {warnung}"
             self.result.emit(erfolg, meldung)
         except SttError as error:
             self.result.emit(False, str(error))

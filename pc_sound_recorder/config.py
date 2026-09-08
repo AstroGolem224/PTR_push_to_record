@@ -85,6 +85,15 @@ class Config:
     # Steuert, ob der bisherige Inhalt der Zwischenablage vor dem Einfügen
     # gelesen und danach zurückgelegt wird. Siehe stt.paste().
     stt_clipboard_restore: bool = True
+    # Nachbearbeitung (siehe postprocess.py). Der Regex-Filter kostet nichts
+    # und bleibt an; Parakeet gibt „äh", „ähm", „uh" und Stottern 1:1 aus.
+    stt_filler_filter: bool = True
+    # Qwen3.5-2B glättet Grammatik und löst „nein ich meine" auf — opt-in:
+    # 1,3 GB Modell, ~1 s je Satz, braucht `PTR_LLM=1 ./install.sh`. Auch im
+    # Tray-Menü umschaltbar.
+    stt_polish: bool = False
+    # ponytail: nur in der Datei. 4 Threads = ~1 s je Satz auf dem 9900X3D.
+    stt_polish_threads: int = 4
     # Abbruch-Kürzel. Anders als das Diktat braucht es keine Einrichtung und
     # kann nichts kaputtmachen (es startet nie etwas), deshalb ab Werk an.
     stop_enabled: bool = True

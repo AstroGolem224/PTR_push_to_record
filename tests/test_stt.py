@@ -11,7 +11,8 @@ import pytest
 from PySide6.QtCore import QEventLoop, QTimer
 from PySide6.QtWidgets import QApplication
 
-from pc_sound_recorder import stt
+from pc_sound_recorder import postprocess, stt
+
 
 
 @pytest.fixture(scope="session")
@@ -758,3 +759,71 @@ def test_venv_site_packages_finds_the_version_folder(tmp_path):
     site.mkdir(parents=True)
     assert stt.venv_site_packages(tmp_path / "venv") == site
     assert stt.venv_site_packages(tmp_path / "fehlt") is None
+
+
+# --- Nachbearbeitung im Faden -------------------------------------------------
+
+def _loud_thread_setup(tmp_path, monkeypatch, recognized):
+    path = _wav(tmp_path / "laut.wav", seconds=2.0, amplitude=8000)
+    monkeypatch.setattr(stt, "load_model", lambda *args, **kwargs: object())
+    monkeypatch.setattr(stt, "transcribe", lambda model, wav, language: recognized)
+    pasted = []
+    monkeypatch.setattr(
+        stt, "paste",
+        lambda text, restore=True: (pasted.append(text), (True, "Diktat eingefügt"))[1],
+    )
+    return path, pasted
+
+
+def test_thread_strips_fillers_before_pasting(qapp, tmp_path, monkeypatch):
+    path, pasted = _loud_thread_setup(tmp_path, monkeypatch, "Ähm, Hallo äh Welt.")
+    results = _run_thread(qapp, stt.DictationThread(path, clipboard_restore=False))
+    assert results == [(True, "Diktat eingefügt")]
+    assert pasted == ["Hallo Welt."]
+
+
+def test_thread_polishes_the_filtered_text(qapp, tmp_path, monkeypatch):
+    path, pasted = _loud_thread_setup(tmp_path, monkeypatch, "äh hallo welt")
+    seen = []
+    monkeypatch.setattr(
+        stt, "polish",
+        lambda text, threads, zeiten=None: (seen.append((text, threads)), ("Hallo, Welt!", None))[1],
+    )
+    results = _run_thread(
+        qapp, stt.DictationThread(path, clipboard_restore=False, polish=True, polish_threads=3)
+    )
+    assert results == [(True, "Diktat eingefügt")]
+    assert seen == [("hallo welt", 3)]
+    assert pasted == ["Hallo, Welt!"]
+
+
+def test_thread_pastes_unpolished_text_and_warns_when_polish_fails(qapp, tmp_path, monkeypatch):
+    path, pasted = _loud_thread_setup(tmp_path, monkeypatch, "hallo welt")
+    monkeypatch.setattr(stt, "polish", lambda text, threads, zeiten=None: (text, "Glätten aus: Qwen-Modell fehlt"))
+    results = _run_thread(qapp, stt.DictationThread(path, clipboard_restore=False, polish=True))
+    assert pasted == ["hallo welt"]
+    assert results == [(False, "Diktat eingefügt – Glätten aus: Qwen-Modell fehlt")]
+
+
+def test_polish_without_model_returns_text_and_hint(monkeypatch, tmp_path):
+    monkeypatch.setattr(stt, "LLM_MODEL", tmp_path / "fehlt.gguf")
+    text, warnung = stt.polish("hallo welt")
+    assert text == "hallo welt"
+    assert warnung is not None and "PTR_LLM=1" in warnung
+
+
+def test_polish_keeps_the_cleaner_warm_and_release_drops_it(monkeypatch, tmp_path):
+    model = tmp_path / "x.gguf"
+    model.write_bytes(b"GGUF")
+    monkeypatch.setattr(stt, "LLM_MODEL", model)
+    built = []
+    monkeypatch.setattr(
+        postprocess, "_load_llama",
+        lambda path, threads: (built.append(path), lambda prompt, **kw: {"choices": [{"text": "Hallo Welt."}]})[1],
+    )
+    assert stt.polish("hallo welt") == ("Hallo Welt.", None)
+    assert stt.polish("hallo welt") == ("Hallo Welt.", None)
+    assert len(built) == 1
+    assert stt.release_model() is True
+    stt.polish("hallo welt")
+    assert len(built) == 2

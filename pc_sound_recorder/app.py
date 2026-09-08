@@ -295,6 +295,20 @@ class SettingsDialog(QDialog):
         )
         stt_clipboard_hint.setWordWrap(True)
         stt_clipboard_hint.setStyleSheet("color: #e67700;")
+        self.stt_filler_filter = QCheckBox(
+            "Diktat: Füllwörter (äh, ähm, hm) und Stottern entfernen"
+        )
+        self.stt_filler_filter.setChecked(config.stt_filler_filter)
+        self.stt_polish = QCheckBox(
+            "Diktat: Text mit lokalem Sprachmodell glätten (Qwen3.5-2B, CPU, ~1 s je Satz)"
+        )
+        self.stt_polish.setChecked(config.stt_polish)
+        self.stt_polish.setToolTip(
+            "Korrigiert Grammatik und Zeichensetzung, löst „nein ich meine“ auf, "
+            "übersetzt nie. Braucht das 1,3-GB-Modell aus `PTR_LLM=1 ./install.sh`; "
+            "fehlt es, wird der Text ungeglättet eingefügt und eine Warnung gezeigt. "
+            "Auch im Tray-Menü umschaltbar."
+        )
 
         # Die ganze Figur oben im Dialog. Eigene Datei im Paket (wird von
         # install.sh mitkopiert) statt des Theme-Icons: das Icon zeigt nur
@@ -348,6 +362,7 @@ class SettingsDialog(QDialog):
             self.tts_enabled, self.voice_hint, self.notifications,
             self.silence_warn, self.clipboard_fallback, clipboard_warning,
             self.stt_enabled, self.stt_clipboard_restore, stt_clipboard_hint,
+            self.stt_filler_filter, self.stt_polish,
             self.stop_enabled, self.autostart,
         ):
             inner_layout.addWidget(widget)
@@ -475,6 +490,8 @@ class SettingsDialog(QDialog):
         config.stt_language = self.stt_language.currentData()
         config.stt_threshold = self.stt_threshold.value()
         config.stt_clipboard_restore = self.stt_clipboard_restore.isChecked()
+        config.stt_filler_filter = self.stt_filler_filter.isChecked()
+        config.stt_polish = self.stt_polish.isChecked()
         config.stop_enabled = self.stop_enabled.isChecked()
         config.stop_modifiers = MODIFIER_OPTIONS[self.stop_modifier.currentText()]
         config.stop_trigger_key = self.stop_trigger.currentData()
@@ -539,6 +556,10 @@ class TrayApplication:
         self.stt_enabled_action.setCheckable(True)
         self.stt_enabled_action.setChecked(self.config.stt_enabled)
         self.stt_enabled_action.toggled.connect(self.set_stt_enabled)
+        self.stt_polish_action = QAction("Diktat glätten (Qwen)", self.menu)
+        self.stt_polish_action.setCheckable(True)
+        self.stt_polish_action.setChecked(self.config.stt_polish)
+        self.stt_polish_action.toggled.connect(self.set_stt_polish)
         self.stop_enabled_action = QAction(
             f"Abbrechen-Hotkey {shortcut_label(self.config, stop=True)} aktiv", self.menu
         )
@@ -558,6 +579,7 @@ class TrayApplication:
         self.menu.addAction(self.enabled_action)
         self.menu.addAction(self.tts_enabled_action)
         self.menu.addAction(self.stt_enabled_action)
+        self.menu.addAction(self.stt_polish_action)
         self.menu.addAction(self.stop_enabled_action)
         self.menu.addAction(self.status_action)
         self.menu.addSeparator()
@@ -807,6 +829,12 @@ class TrayApplication:
         self._restart_hotkey()
         self._refresh()
 
+    def set_stt_polish(self, enabled: bool) -> None:
+        # Wirkt ab dem nächsten Diktat; das warme Qwen bleibt bis zur
+        # Leerlauffrist geladen, ein Wiedereinschalten kostet dann nichts.
+        self.config.stt_polish = enabled
+        self.config.save()
+
     def set_stop_enabled(self, enabled: bool) -> None:
         # Kein Aufräumen beim Ausschalten: das Abbrechen hält keinen Zustand.
         self.config.stop_enabled = enabled
@@ -920,6 +948,9 @@ class TrayApplication:
             clipboard_restore=self.config.stt_clipboard_restore,
             compute_type=self.config.stt_compute_type,
             engine=self.config.stt_engine,
+            filler_filter=self.config.stt_filler_filter,
+            polish=self.config.stt_polish,
+            polish_threads=self.config.stt_polish_threads,
         )
         self.stt = worker
         worker.result.connect(lambda ok, message: self._dictation_result(worker, ok, message))
@@ -1130,6 +1161,7 @@ class TrayApplication:
             f"Diktat-Hotkey {shortcut_label(self.config, stt=True)} aktiv"
         )
         self.stt_enabled_action.setChecked(self.config.stt_enabled)
+        self.stt_polish_action.setChecked(self.config.stt_polish)
         self.stop_enabled_action.setText(
             f"Abbrechen-Hotkey {shortcut_label(self.config, stop=True)} aktiv"
         )

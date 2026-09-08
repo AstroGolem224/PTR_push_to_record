@@ -869,3 +869,51 @@ def test_autostart_faellt_ohne_unit_auf_den_xdg_eintrag_zurueck(tmp_path, monkey
 
     app_modul.set_autostart(False)
     assert not xdg.exists()
+
+
+def test_settings_apply_writes_the_postprocess_fields(qapp, monkeypatch):
+    dialog = _dialog(qapp, monkeypatch)
+    dialog.stt_filler_filter.setChecked(False)
+    dialog.stt_polish.setChecked(True)
+    config = Config(output_dir="/tmp")
+    dialog.apply(config)
+    assert config.stt_filler_filter is False
+    assert config.stt_polish is True
+
+
+def test_polish_menu_action_toggles_and_saves(monkeypatch):
+    app = _tray_app_without_gui()
+    saved = []
+    monkeypatch.setattr(app.config, "save", lambda: saved.append(app.config.stt_polish))
+    app.set_stt_polish(True)
+    assert app.config.stt_polish is True
+    app.set_stt_polish(False)
+    assert saved == [True, False]
+
+
+def test_finish_dictation_hands_postprocess_settings_to_the_thread(tmp_path, monkeypatch):
+    app = _dictation_app(tmp_path)
+    app.config.stt_filler_filter = False
+    app.config.stt_polish = True
+    app.config.stt_polish_threads = 6
+    captured = {}
+
+    class FakeThread:
+        result = SimpleNamespace(connect=lambda cb: None)
+        finished = SimpleNamespace(connect=lambda cb: None)
+
+        def __init__(self, path, **kwargs):
+            captured.update(kwargs)
+
+        def start(self):
+            pass
+
+        def isRunning(self):
+            return False
+
+    monkeypatch.setattr(app_module, "DictationThread", FakeThread)
+    app.dictation.start()
+    app.finish_dictation()
+    assert captured["filler_filter"] is False
+    assert captured["polish"] is True
+    assert captured["polish_threads"] == 6

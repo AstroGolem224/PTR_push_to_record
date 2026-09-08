@@ -281,6 +281,44 @@ else
   download_stt_models
 fi
 
+# --- Diktat glätten (Qwen3.5-2B, opt-in) ---
+#
+# Nur mit PTR_LLM=1: 1,3 GB Modell plus llama-cpp-python (CPU-Wheel vom
+# abetlen-Index, PyPI hat nur die Quelle) in die Diktat-venv. Ohne beides
+# bleibt das Häkchen „glätten" wirkungslos und PTR meldet beim Diktat, was fehlt.
+# Ollama-Blobs taugen nicht als Ersatz: Ollamas Qwen3.5-Konvertierung lehnt
+# llama.cpp ab (rope.dimension_sections 3 statt 4, gemessen 2026-09-08).
+llm_file="$models_dir/qwen3.5-2b-q4_k_m.gguf"
+if [[ "${PTR_LLM:-0}" == "0" ]]; then
+  if [[ -f "$llm_file" ]]; then
+    echo "Qwen-Modell vorhanden: $llm_file"
+  else
+    echo "Diktat glätten (Qwen) übersprungen – nachrüsten mit: PTR_LLM=1 ./install.sh (1,3 GB)"
+  fi
+elif ! stt_venv_ok; then
+  warn "PTR_LLM gesetzt, aber die Diktat-Umgebung fehlt – Qwen wurde nicht eingerichtet."
+else
+  if "$stt_venv/bin/python" -c 'import llama_cpp' >/dev/null 2>&1; then
+    echo "llama-cpp-python vorhanden."
+  elif uv pip install --python "$stt_venv/bin/python" \
+         --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu \
+         "llama-cpp-python==0.3.35"; then
+    echo "llama-cpp-python installiert."
+  else
+    warn "llama-cpp-python ließ sich nicht installieren – das Glätten bleibt aus."
+  fi
+  if [[ -f "$llm_file" ]]; then
+    echo "Qwen-Modell vorhanden: $llm_file"
+  elif curl -L --fail -o "$llm_file.tmp" \
+         "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf"; then
+    mv "$llm_file.tmp" "$llm_file"
+    echo "Qwen-Modell geladen."
+  else
+    rm -f "$llm_file.tmp"
+    warn "Das Qwen-Modell konnte nicht geladen werden – das Glätten bleibt aus."
+  fi
+fi
+
 cp "$project_dir/packaging/pc-sound-recorder.png" "$icon_dir/pc-sound-recorder.png"
 # Aufräumen nach älteren Installationen: dort lag ein SVG im scalable-Zweig,
 # und das Theme bevorzugte es sonst vor dem neuen PNG.
