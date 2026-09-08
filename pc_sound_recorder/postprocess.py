@@ -38,8 +38,8 @@ def strip_fillers(text: str) -> str:
 # Parakeet schreibt Zahlen inkonsistent („zwölf Monate", aber „365 Tage"), und
 # Qwen3.5-2B darf sie nicht anfassen: aus „neunzehnhundertsechsundzwanzig" machte
 # es „1898" (gemessen 2026-09-08). Also deterministisch: Kardinalzahlen DE+EN.
-# ponytail: keine Ordinalzahlen („fünften"), keine Brüche, kein „drei Euro
-# fünfzig" -> „3,50 Euro" (wird „3 Euro 50"). Artikel ein/eine/a/one bleiben.
+# ponytail: keine Ordinalzahlen („fünften"), keine Brüche. Artikel ein/eine/a/one
+# bleiben. Beträge: „drei Euro fünfzig" -> „3,50 Euro" (siehe _AMOUNT_RE).
 _DE_UNITS = {"null": 0, "eins": 1, "ein": 1, "zwei": 2, "drei": 3, "vier": 4, "fünf": 5,
              "sechs": 6, "sieben": 7, "acht": 8, "neun": 9, "zehn": 10, "elf": 11,
              "zwölf": 12, "dreizehn": 13, "vierzehn": 14, "fünfzehn": 15, "sechzehn": 16,
@@ -135,6 +135,18 @@ def parse_english_number(phrase: str) -> int | None:
 
 
 _DE_WORD_RE = re.compile(r"\b[a-zäöüßA-ZÄÖÜ]+\b")
+# „drei Euro fünfzig" -> nach dem Zahlwort-Schritt „3 Euro 50" -> „3,50 Euro".
+# ponytail: nur genau zwei Nachkommastellen („3 Euro 5" und „10 Euro 3 Mal"
+# bleiben), Euro/Franken mit Komma, Dollar/Pfund mit Punkt.
+_AMOUNT_RE = re.compile(
+    r"\b(\d+) (Euro|Franken|Dollars?|Pounds?|Pfund) (\d{2})(?: (?:Cent|cents?|Rappen|Pence))?\b"
+)
+
+
+def _amount(match: re.Match) -> str:
+    whole, currency, cents = match.groups()
+    separator = "." if currency.lower().startswith(("dollar", "pound")) else ","
+    return f"{whole}{separator}{cents} {currency}"
 
 
 def words_to_digits(text: str) -> str:
@@ -147,7 +159,8 @@ def words_to_digits(text: str) -> str:
         return match.group(0) if value is None else str(value)
 
     text = _EN_RUN.sub(en, text)
-    return _DE_WORD_RE.sub(de, text)
+    text = _DE_WORD_RE.sub(de, text)
+    return _AMOUNT_RE.sub(_amount, text)
 
 
 _SYSTEM = (

@@ -95,7 +95,7 @@ def test_prompt_carries_the_language_hint(tmp_path, monkeypatch):
     ("Ich bin neunzehnhundertsechsundzwanzig geboren.", "Ich bin 1926 geboren."),
     ("Wir treffen uns um zehn Uhr.", "Wir treffen uns um 10 Uhr."),
     ("Im Jahr 1926 gab es zwölf Monate.", "Im Jahr 1926 gab es 12 Monate."),
-    ("Das kostet drei Euro fünfzig.", "Das kostet 3 Euro 50."),
+    ("Das kostet drei Euro fünfzig.", "Das kostet 3,50 Euro."),
     ("zweitausenddreiundzwanzig, einhundertfünf, tausend, eins", "2023, 105, 1000, 1"),
     ("Zwölf Monate hat das Jahr.", "12 Monate hat das Jahr."),
     # Artikel und Nicht-Zahlen bleiben
@@ -109,4 +109,15 @@ def test_prompt_carries_the_language_hint(tmp_path, monkeypatch):
     ("five six seven", "five six seven"),      # kein Zahlwort-Muster, bleibt
 ])
 def test_words_to_digits(raw, expected):
+    assert words_to_digits(raw) == expected
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("drei Euro fünfzig", "3,50 Euro"),
+    ("Das kostet zwölf Euro neunundneunzig Cent.", "Das kostet 12,99 Euro."),
+    ("two dollars fifty", "2.50 dollars"),
+    ("zehn Euro drei Mal", "10 Euro 3 Mal"),       # keine zwei Stellen: kein Betrag
+    ("3,50 Euro", "3,50 Euro"),
+])
+def test_amounts(raw, expected):
     assert words_to_digits(raw) == expected

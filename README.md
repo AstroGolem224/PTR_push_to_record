@@ -105,7 +105,7 @@ Einstellungen räumen nach:
 - **Füllwörter entfernen** (ab Werk an): Regex nach Handy-Vorbild, nur
   sprachunabhängig eindeutige Wörter (äh, ähm, ehm, uh, hm, mhm …) und
   Wiederholungen ab dreimal. „um" bleibt — im Deutschen eine Präposition.
-  Außerdem werden Zahlwörter zu Ziffern („zwölf Monate" → „12 Monate",
+  Außerdem werden Zahlwörter zu Ziffern („zwölf Monate" → „12 Monate", „drei Euro fünfzig" → „3,50 Euro",
   „neunzehnhundertsechsundzwanzig" → „1926"); Parakeet schreibt das sonst mal
   so, mal so. Artikel („ein Auto") bleiben. Nach dem Text folgt ein
   Leerzeichen, damit das nächste Diktat nicht am letzten Zeichen klebt.
