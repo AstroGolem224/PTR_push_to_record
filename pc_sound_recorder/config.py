@@ -86,7 +86,8 @@ class Config:
     # gelesen und danach zurückgelegt wird. Siehe stt.paste().
     stt_clipboard_restore: bool = True
     # Nachbearbeitung (siehe postprocess.py). Der Regex-Filter kostet nichts
-    # und bleibt an; Parakeet gibt „äh", „ähm", „uh" und Stottern 1:1 aus.
+    # und bleibt an; Parakeet gibt „äh", „ähm", „uh" und Stottern 1:1 aus und
+    # schreibt Zahlen mal als Wort, mal als Ziffer — der Schritt vereinheitlicht.
     stt_filler_filter: bool = True
     # Qwen3.5-2B glättet Grammatik und löst „nein ich meine" auf — opt-in:
     # 1,3 GB Modell, ~1 s je Satz, braucht `PTR_LLM=1 ./install.sh`. Auch im

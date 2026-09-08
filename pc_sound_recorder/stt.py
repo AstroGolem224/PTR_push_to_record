@@ -77,7 +77,7 @@ from typing import NamedTuple
 
 from PySide6.QtCore import QThread, Signal
 
-from .postprocess import LLMCleaner, strip_fillers
+from .postprocess import LLMCleaner, strip_fillers, words_to_digits
 
 
 # 16 kHz mono ist, was Whisper intern ohnehin daraus macht — gleich so
@@ -965,7 +965,7 @@ class DictationThread(QThread):
                 return
             warnung = None
             if self.filler_filter:
-                text = strip_fillers(text)
+                text = words_to_digits(strip_fillers(text))
             if self.polish and text:
                 text, warnung = polish(text, self.polish_threads, zeiten)
             if not text:
@@ -978,7 +978,9 @@ class DictationThread(QThread):
                 return
             self.clipboard_touched = True
             begonnen = time.monotonic()
-            erfolg, meldung = paste(text, restore=self.clipboard_restore)
+            # Abschließendes Leerzeichen: das nächste Diktat setzt sonst direkt
+            # ans letzte Zeichen ("ändern?So, dass", 2026-09-08 gesehen).
+            erfolg, meldung = paste(text + " ", restore=self.clipboard_restore)
             zeiten["einfügen"] = time.monotonic() - begonnen
             if erfolg and warnung:
                 # Eingefügt, aber nicht geglättet: als Warnung melden, sonst

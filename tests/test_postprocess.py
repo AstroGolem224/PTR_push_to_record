@@ -3,7 +3,7 @@
 import pytest
 
 from pc_sound_recorder import postprocess
-from pc_sound_recorder.postprocess import LLMCleaner, strip_fillers
+from pc_sound_recorder.postprocess import LLMCleaner, guess_language, strip_fillers, words_to_digits
 
 
 @pytest.mark.parametrize("raw, expected", [
@@ -74,3 +74,39 @@ def test_clean_falls_back_to_input_when_reply_is_implausible(tmp_path, monkeypat
 def test_missing_model_file_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
         LLMCleaner(tmp_path / "none.gguf", num_threads=2)
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("Wir treffen uns um 10 Uhr und das ist gut.", "German"),
+    ("I was born in 1926 and the meeting is at 10.", "English"),
+    ("1926", None),
+])
+def test_guess_language_by_stopwords(text, expected):
+    assert guess_language(text) == expected
+
+
+def test_prompt_carries_the_language_hint(tmp_path, monkeypatch):
+    cleaner, fake = _cleaner(tmp_path, monkeypatch)
+    cleaner.clean("I think we should not do this.")
+    assert "The input is English. Reply in English." in fake.prompts[0][0]
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("Ich bin neunzehnhundertsechsundzwanzig geboren.", "Ich bin 1926 geboren."),
+    ("Wir treffen uns um zehn Uhr.", "Wir treffen uns um 10 Uhr."),
+    ("Im Jahr 1926 gab es zwölf Monate.", "Im Jahr 1926 gab es 12 Monate."),
+    ("Das kostet drei Euro fünfzig.", "Das kostet 3 Euro 50."),
+    ("zweitausenddreiundzwanzig, einhundertfünf, tausend, eins", "2023, 105, 1000, 1"),
+    ("Zwölf Monate hat das Jahr.", "12 Monate hat das Jahr."),
+    # Artikel und Nicht-Zahlen bleiben
+    ("ich hab ein Auto und eine Katze, einen Hund", "ich hab ein Auto und eine Katze, einen Hund"),
+    ("Die Zeichnung ist einfach.", "Die Zeichnung ist einfach."),
+    ("neunundneunzig Luftballons", "99 Luftballons"),
+    # Englisch
+    ("twenty three people, one hundred and five days, two thousand", "23 people, 105 days, 2000"),
+    ("one of them is here", "one of them is here"),
+    ("nineteen twenty six, twenty twenty", "1926, 2020"),
+    ("five six seven", "five six seven"),      # kein Zahlwort-Muster, bleibt
+])
+def test_words_to_digits(raw, expected):
+    assert words_to_digits(raw) == expected

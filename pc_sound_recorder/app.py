@@ -296,7 +296,7 @@ class SettingsDialog(QDialog):
         stt_clipboard_hint.setWordWrap(True)
         stt_clipboard_hint.setStyleSheet("color: #e67700;")
         self.stt_filler_filter = QCheckBox(
-            "Diktat: Füllwörter (äh, ähm, hm) und Stottern entfernen"
+            "Diktat: Füllwörter (äh, ähm, hm) und Stottern entfernen, Zahlwörter als Ziffern"
         )
         self.stt_filler_filter.setChecked(config.stt_filler_filter)
         self.stt_polish = QCheckBox(

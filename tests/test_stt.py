@@ -319,7 +319,7 @@ def test_thread_transcribes_and_pastes(qapp, tmp_path, monkeypatch):
     )
     results = _run_thread(qapp, stt.DictationThread(path, clipboard_restore=False))
     assert results == [(True, "Diktat eingefügt")]
-    assert pasted == [("Hallo Welt", False)]
+    assert pasted == [("Hallo Welt ", False)]
     assert not path.exists()
 
 
@@ -444,7 +444,7 @@ def test_release_during_recognition_does_not_break_the_dictation(qapp, tmp_path,
         stt, "paste", lambda text, restore=True: (True, f"eingefügt: {text}")
     )
     results = _run_thread(qapp, stt.DictationThread(path))
-    assert results == [(True, "eingefügt: Hallo Welt")]
+    assert results == [(True, "eingefügt: Hallo Welt ")]
     assert freigaben == [False]         # abgelehnt, nicht abgestürzt
     # Danach ist der Riegel frei und die Freigabe greift.
     assert stt.release_model() is True
@@ -776,10 +776,10 @@ def _loud_thread_setup(tmp_path, monkeypatch, recognized):
 
 
 def test_thread_strips_fillers_before_pasting(qapp, tmp_path, monkeypatch):
-    path, pasted = _loud_thread_setup(tmp_path, monkeypatch, "Ähm, Hallo äh Welt.")
+    path, pasted = _loud_thread_setup(tmp_path, monkeypatch, "Ähm, Hallo äh Welt, um zehn Uhr.")
     results = _run_thread(qapp, stt.DictationThread(path, clipboard_restore=False))
     assert results == [(True, "Diktat eingefügt")]
-    assert pasted == ["Hallo Welt."]
+    assert pasted == ["Hallo Welt, um 10 Uhr. "]
 
 
 def test_thread_polishes_the_filtered_text(qapp, tmp_path, monkeypatch):
@@ -794,14 +794,14 @@ def test_thread_polishes_the_filtered_text(qapp, tmp_path, monkeypatch):
     )
     assert results == [(True, "Diktat eingefügt")]
     assert seen == [("hallo welt", 3)]
-    assert pasted == ["Hallo, Welt!"]
+    assert pasted == ["Hallo, Welt! "]
 
 
 def test_thread_pastes_unpolished_text_and_warns_when_polish_fails(qapp, tmp_path, monkeypatch):
     path, pasted = _loud_thread_setup(tmp_path, monkeypatch, "hallo welt")
     monkeypatch.setattr(stt, "polish", lambda text, threads, zeiten=None: (text, "Glätten aus: Qwen-Modell fehlt"))
     results = _run_thread(qapp, stt.DictationThread(path, clipboard_restore=False, polish=True))
-    assert pasted == ["hallo welt"]
+    assert pasted == ["hallo welt "]
     assert results == [(False, "Diktat eingefügt – Glätten aus: Qwen-Modell fehlt")]
 
 

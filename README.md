@@ -105,6 +105,10 @@ Einstellungen räumen nach:
 - **Füllwörter entfernen** (ab Werk an): Regex nach Handy-Vorbild, nur
   sprachunabhängig eindeutige Wörter (äh, ähm, ehm, uh, hm, mhm …) und
   Wiederholungen ab dreimal. „um" bleibt — im Deutschen eine Präposition.
+  Außerdem werden Zahlwörter zu Ziffern („zwölf Monate" → „12 Monate",
+  „neunzehnhundertsechsundzwanzig" → „1926"); Parakeet schreibt das sonst mal
+  so, mal so. Artikel („ein Auto") bleiben. Nach dem Text folgt ein
+  Leerzeichen, damit das nächste Diktat nicht am letzten Zeichen klebt.
   Kostet nichts.
 - **Text glätten (Qwen)** (ab Werk aus, auch im Tray-Menü): ein lokales
   Qwen3.5-2B (Q4, 1,3 GB, CPU) korrigiert Grammatik und Zeichensetzung, löst
