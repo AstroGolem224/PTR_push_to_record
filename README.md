@@ -219,6 +219,45 @@ Die Diktat-Umgebung wird geprüft, nicht nur gezählt: passt die Python-Version
 nicht oder fehlt `faster_whisper` (etwa nach einem Abbruch), baut ein erneutes
 `./install.sh` sie neu.
 
+### Speicherlimit
+
+Gemessen am 2026-09-17 nach 28 h Laufzeit: 9,4 GB Swap, cgroup-Peak 4,5 GB —
+zusammen mit ComfyUI führte das zweimal zu einem globalen OOM (getroffen
+wurde jeweils ein anderer Prozess, nicht PTR selbst). Ursache war kein
+Speicherleck in PTR: gezielte Lade/Entlade-Tests von Parakeet-Recognizer und
+VAD (je 30–60 Zyklen) zeigten stabiles RSS, auch ohne `gc.collect()`. Die
+Unit hat deshalb ein Cgroup-Limit statt eines Code-Fixes:
+
+```bash
+systemctl --user set-property pc-sound-recorder.service \
+  MemoryHigh=3G MemoryMax=5G MemorySwapMax=1G
+```
+
+`MemoryHigh` liegt knapp über dem normalen Betrieb (Qt-Baseline + warmes
+Parakeet-Modell ~700 MB), drosselt/reclaimt also nur bei ungewöhnlichem
+Wachstum, statt normale TTS-/Diktat-Lastspitzen zu bremsen. `MemoryMax`
+liegt mit Reserve über dem gemessenen 4,5-GB-Peak. `MemorySwapMax=1G`
+verhindert die Art von Swap-Eskalation, die das eigentliche Problem war,
+ohne moderates Swapping unter Last zu verbieten. Ein OOM-Kill innerhalb
+dieser Grenzen betrifft nur PTR (Cgroup-OOM), nicht mehr den globalen
+Killer — und `Restart=on-failure` (siehe oben) fängt ihn auf: verifiziert
+durch einen simulierten `SIGKILL` auf den Hauptprozess, Dienst kam binnen
+`RestartSec=5` sauber wieder hoch (`Result=success`, `NRestarts` erhöht).
+
+Das Limit landet als Drop-in unter
+`~/.config/systemd/user.control/pc-sound-recorder.service.d/`, nicht in der
+Unit-Datei selbst. Rückweg:
+
+```bash
+systemctl --user revert pc-sound-recorder.service
+```
+
+`stt.release_model()` (Idle-Entladen nach `stt_warm_minutes`, Vorgabe 10 min)
+ruft seit diesem Fund zusätzlich `gc.collect()` auf, wenn wirklich etwas
+freigegeben wurde — Vorsorge für den ctranslate2/Whisper-Pfad (dort nicht
+gemessen, da im Alltag `stt_engine=parakeet` aktiv ist), kostet bei leerem
+Cache nichts.
+
 ## Deinstallation
 
 ```bash

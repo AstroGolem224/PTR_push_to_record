@@ -454,6 +454,45 @@ def test_release_without_a_model_reports_nothing_to_free(monkeypatch):
     assert stt.release_model() is False
 
 
+def test_release_model_leerlauf_gibt_modell_frei(monkeypatch, tmp_path):
+    """Namensschema methode_setup_erwartung: prueft das Entladen nach Leerlauf.
+
+    `release_model()` ist genau das, was der Qt-Idle-Timer in app.py aufruft,
+    wenn `stt_warm_minutes` ohne Diktat verstrichen ist (siehe
+    `TrayApplication._stt_release_timer`). Das Modell selbst wird gemockt.
+    """
+    # GIVEN ein warm gehaltenes (gemocktes) Modell nach einer Erkennung
+    monkeypatch.setattr(stt, "load_model", lambda model, device, compute_type: object())
+    monkeypatch.setattr(stt, "transcribe", lambda model, wav, language: "Hallo")
+    stt.recognize(tmp_path / "x.wav")
+    assert stt._cache is not None
+    gc_aufrufe = []
+    monkeypatch.setattr(stt.gc, "collect", lambda: gc_aufrufe.append(1))
+
+    # WHEN die Leerlauffrist ablaeuft und der Timer release_model() ausloest
+    freigegeben = stt.release_model()
+
+    # THEN ist der Modell-Cache leer und gc.collect() wurde angestossen
+    assert freigegeben is True
+    assert stt._cache is None
+    assert stt._polish_cache is None
+    assert gc_aufrufe == [1]
+
+
+def test_release_model_leerlauf_ohne_modell_ruft_gc_nicht_auf(monkeypatch):
+    """methode_setup_erwartung: ohne warmes Modell ist gc.collect() unnoetig."""
+    # GIVEN kein warm gehaltenes Modell (frischer Zustand, siehe conftest)
+    gc_aufrufe = []
+    monkeypatch.setattr(stt.gc, "collect", lambda: gc_aufrufe.append(1))
+
+    # WHEN der Leerlauf-Timer trotzdem feuert (z. B. nach einem verworfenen Diktat)
+    freigegeben = stt.release_model()
+
+    # THEN passiert nichts – gc.collect() kostet nur, wenn es etwas zu tun gibt
+    assert freigegeben is False
+    assert gc_aufrufe == []
+
+
 def test_model_is_built_from_the_cache_first(monkeypatch):
     """Ohne `local_files_only` fragt huggingface_hub bei jedem Laden online nach."""
     aufrufe = []

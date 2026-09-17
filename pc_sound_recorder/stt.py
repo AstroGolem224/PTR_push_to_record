@@ -63,6 +63,7 @@ from __future__ import annotations
 import array
 import atexit
 import functools
+import gc
 import math
 import os
 import pathlib
@@ -401,6 +402,14 @@ def release_model() -> bool:
     hielte hier eine laufende Erkennung den Riegel, fröre die Tray-App für die
     Dauer der Erkennung ein. Ein `False` ist kein Fehler — die Frist startet
     nach jedem Diktat neu, der nächste Ablauf räumt nach.
+
+    `gc.collect()` nur, wenn wirklich etwas freigegeben wurde: sherpa-onnx-
+    (ONNX-Runtime-)Objekte hängen an C-Erweiterungstypen, die reines
+    Refcounting manchmal nicht sofort einsammelt. Gemessen 2026-09-17 über
+    60 Lade/Entlade-Zyklen (Parakeet-Recognizer + VAD): kein wachsendes Leck,
+    RSS blieb stabil auch ohne `gc.collect()` — der Aufruf ist hier also
+    Vorsorge für den ctranslate2/Whisper-Pfad, nicht Reaktion auf einen
+    nachgewiesenen Fund, und kostet bei leerem Cache nichts.
     """
     global _cache, _polish_cache
     if not _cache_lock.acquire(blocking=False):
@@ -410,6 +419,8 @@ def release_model() -> bool:
         _cache, _polish_cache = None, None
     finally:
         _cache_lock.release()
+    if released:
+        gc.collect()
     return released
 
 
