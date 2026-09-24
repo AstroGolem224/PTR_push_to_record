@@ -395,6 +395,27 @@ def polish(text: str, threads: int = 4, zeiten: dict[str, float] | None = None) 
     return result, None
 
 
+def preload(engine: str, polish_on: bool, threads: int = 4) -> None:
+    """Parakeet (und Qwen) beim Programmstart in den Cache legen.
+
+    Nur für Parakeet: ohne Vorladen kostete das erste Diktat nach dem Anmelden
+    1,6–2,1 s Laden, mit Glätten zusätzlich ~2,5 s für Qwen (Journal
+    2026-09-23). Whisper bleibt kalt, weil es VRAM belegen würde. Läuft in
+    einem Hintergrundfaden; ein Diktat, das währenddessen kommt, wartet am
+    `_cache_lock` und bekommt das fertige Modell. Fehler landen nur auf
+    stderr — das nächste Diktat versucht es ohnehin selbst und meldet sie.
+    """
+    if engine != "parakeet":
+        return
+    try:
+        with _cache_lock:
+            _cached_model("parakeet", "cpu", "int8", engine)
+        if polish_on:
+            polish("vorladen", threads)
+    except Exception as error:      # noqa: BLE001
+        print(f"Vorladen fehlgeschlagen: {_fehlertext(error)}", file=sys.stderr)
+
+
 def release_model() -> bool:
     """Gibt das warm gehaltene Modell frei. True, wenn es wirklich weg ist.
 

@@ -5,6 +5,7 @@ import pathlib
 import shutil
 import subprocess
 import sys
+import threading
 import time
 
 from PySide6.QtCore import (
@@ -24,7 +25,8 @@ from .config import (
 )
 from .hotkey import HotkeyThread
 from .stt import (
-    DictationThread, Recording, release_model, restore_clipboard, snapshot_clipboard,
+    DictationThread, Recording, preload, release_model, restore_clipboard,
+    snapshot_clipboard,
 )
 from .tts import SpeechThread, VoicesThread, find_mimic
 
@@ -594,6 +596,14 @@ class TrayApplication:
         set_autostart(self.config.autostart)
         self._restart_hotkey()
         self._refresh()
+        if self.config.stt_enabled:
+            # Modelle schon beim Start laden, nicht erst beim ersten Diktat.
+            threading.Thread(
+                target=preload,
+                args=(self.config.stt_engine, self.config.stt_polish,
+                      self.config.stt_polish_threads),
+                daemon=True,
+            ).start()
         # Dieselbe Quelle wie die Statuszeile: fest verdrahtet versprach die
         # Blase Kürzel, die gar nicht bedient werden.
         ready = " · ".join(self._ready_shortcuts())
@@ -873,9 +883,15 @@ class TrayApplication:
     # --- Diktat -----------------------------------------------------------
 
     def _arm_stt_release(self) -> None:
-        """Leerlauffrist neu starten. `stt_warm_minutes == 0` heißt: nie freigeben."""
+        """Leerlauffrist neu starten. `stt_warm_minutes == 0` heißt: nie freigeben.
+
+        Parakeet allein (CPU, ~1,6 GB RSS) bleibt immer warm: Freigeben hieße
+        nur, das nächste Diktat wartet ~2 s aufs Neuladen. Mit Qwen sind es
+        ~3,4 GB, über MemoryHigh=3G der Unit — dann gilt die Frist wieder.
+        """
         self._stt_release_timer.stop()
-        if self.config.stt_warm_minutes > 0:
+        parakeet_only = self.config.stt_engine == "parakeet" and not self.config.stt_polish
+        if not parakeet_only and self.config.stt_warm_minutes > 0:
             self._stt_release_timer.start(int(self.config.stt_warm_minutes * 60_000))
 
     def start_dictation(self) -> None:

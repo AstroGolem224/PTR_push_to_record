@@ -547,6 +547,7 @@ def test_shutdown_leaves_an_untouched_clipboard_alone(tmp_path, monkeypatch):
 def test_idle_timer_starts_after_a_dictation_and_pauses_during_one(tmp_path, monkeypatch):
     """Die Frist zählt Leerlauf, nicht Diktat."""
     app = _dictation_app(tmp_path)
+    app.config.stt_engine = "whisper"
     app.config.stt_warm_minutes = 10
     monkeypatch.setattr(stt_module, "too_quiet", lambda path, threshold: (False, 0.2))
     monkeypatch.setattr(stt_module, "load_model", lambda *args, **kwargs: object())
@@ -566,6 +567,20 @@ def test_warm_minutes_zero_never_releases(tmp_path):
     app.config.stt_warm_minutes = 0
     app._arm_stt_release()
     assert app._stt_release_timer.interval is None
+
+
+def test_parakeet_never_releases(tmp_path):
+    """CPU-Modell, kein VRAM: Freigeben kostete nur Neuladen beim nächsten Diktat."""
+    app = _dictation_app(tmp_path)
+    app.config.stt_engine = "parakeet"
+    app.config.stt_polish = False
+    app.config.stt_warm_minutes = 10
+    app._arm_stt_release()
+    assert app._stt_release_timer.interval is None
+    # Mit Qwen über MemoryHigh: dann doch nach der Frist freigeben.
+    app.config.stt_polish = True
+    app._arm_stt_release()
+    assert app._stt_release_timer.interval == 600_000
 
 
 def test_shutdown_frees_the_warm_model(tmp_path, monkeypatch):
